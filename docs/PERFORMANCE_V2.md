@@ -59,6 +59,12 @@ The build wrapper explicitly selects HLE, disables saves, enables LTO and sets
 version 0.2.0, including when reusing an old CMake cache. The README documents
 the SD copy command. The exported patch includes the committed 0.2 updates.
 
+After the [module refactor](ARCHITECTURE.md), the wrapper delegates to
+`games/smb1/` and retains the package path above. Current baseline/optimized
+host builds use `build/games/smb1/host` and `host-optimized`; historical paths
+and measurements below are retained. [UPSTREAM.md](UPSTREAM.md) has current
+build/test commands and the byte-identical comparison with these 0.2 captures.
+
 From the NESRecomp checkout, the no-save contract command is:
 
 ```sh

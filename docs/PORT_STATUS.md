@@ -1,16 +1,26 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+The subsequent [modular architecture](ARCHITECTURE.md) separates game recipes
+under `games/` from the Switch frontend and adds opt-in shared hardware
+contracts/static build modules. [Upstream contribution notes](UPSTREAM.md)
+record the scope, validation and future PR boundaries. These additional source
+changes are committed locally as `d248afef21bc80631f53a44c9ebb6efcb2147dd2`
+and included in the cumulative patch below.
+Canonical new outputs use `build/games/smb1/`; paths below describe the retained
+0.1/0.2 evidence and compatibility commands.
+
 Current follow-up: [0.2 performance build with saving disabled](PERFORMANCE_V2.md).
-The original 0.1 contribution and the 0.2 follow-up are committed locally;
-the exported patch contains their combined changes against the upstream base.
+The original 0.1 contribution, 0.2 follow-up and modular architecture are
+committed locally; the exported patch contains all changes against the upstream base.
 
 Implemented in the local NESRecomp checkout at
 `.local/src/nesrecomp`, branch `codex/switch-runner`. The reviewable and
 reproducible contribution is [patches/nesrecomp-switch.patch](../patches/nesrecomp-switch.patch),
 including its upstream `docs/SWITCH.md`. The Mario checkout is unchanged.
 The NESRecomp contribution is committed locally as
-`a4e9f74109067dc5105c1059322efc264d436b75` (`codex/switch-runner`), following
-the original `4eed78d9d6abf60c651942bc3e60f1762370133d` commit.
+`d248afef21bc80631f53a44c9ebb6efcb2147dd2` (`codex/switch-runner`), following
+the 0.2 `a4e9f74109067dc5105c1059322efc264d436b75` and original
+`4eed78d9d6abf60c651942bc3e60f1762370133d` commits.
 The parent workspace records the exported patch, scripts and results in its
 own local commit. No PR, remote write or publishing has been performed.
 

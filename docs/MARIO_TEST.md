@@ -96,6 +96,10 @@ python3 scripts/test-smb.py --rom "$PWD/.local/roms/SMB.nes"
 python3 scripts/inspect-nro.py build/smb1/SuperMarioBrosRecomp.nro
 ```
 
+These compatibility commands now delegate to [the game module](../games/smb1/README.md).
+New host/test output uses `build/games/smb1/`; the wrapper retains the NRO path
+above. The following are archived 0.1 evidence paths.
+
 Build log: `build/smb1/build.log`. Native test route, screenshots, hashes,
 state and WAV: `build/smb1/tests/`. Machine-readable results:
 `build/smb1/tests/summary.json`. The script uses the already-built oracle if

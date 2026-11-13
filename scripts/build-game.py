@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Build one game module using a native host compiler and a Switch SDK."""
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+IMAGE = 'devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282'
+
+def run(*args, env=None):
+    subprocess.run(list(map(str, args)), cwd=ROOT, check=True, env=env)
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('game')
+    ap.add_argument('--rom', required=True, type=Path)
+    ap.add_argument('--backend', choices=['auto', 'native', 'docker'], default='auto')
+    ap.add_argument('--host-only', action='store_true')
+    ap.add_argument('--variant', choices=['baseline', 'optimized'], default='baseline', help='Native reference variant')
+    ap.add_argument('--ppu', choices=['LLE', 'HLE'], help='Explicit Switch PPU override for comparisons')
+    ap.add_argument('--output-dir', type=Path, help='Override packaged NRO directory')
+    args = ap.parse_args()
+    if not args.game or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in args.game):
+        ap.error('Invalid game module name')
+    if not (ROOT / 'games' / args.game / 'game.cmake').is_file():
+        ap.error(f'Unknown game module: {args.game}')
+    rom = args.rom.expanduser().resolve()
+    if not rom.is_file():
+        ap.error('ROM must be an existing file')
+    run('bash', 'scripts/prepare-sources.sh')
+    engine = ROOT / '.local/src/nesrecomp'
+    build = ROOT / 'build/games' / args.game
+    output = args.output_dir.expanduser().resolve() if args.output_dir else build
+    host = build / ('host' if args.variant == 'baseline' else 'host-optimized')
+    compiler = ROOT / 'build/recompiler/NESRecomp'
+    run('cmake', '-S', engine / 'recompiler', '-B', compiler.parent, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release')
+    run('cmake', '--build', compiler.parent, '--parallel', '4')
+
+    def configure(binary, compiler_path, rom_path, variant):
+        return ['cmake', '-S', str(ROOT / 'games'), '-B', str(binary), '-G', 'Ninja',
+                '-DCMAKE_BUILD_TYPE=Release', f'-DGAME_ID={args.game}', f'-DGAME_VARIANT={variant}',
+                f'-DNESRECOMP_ROOT={engine}', f'-DNESRECOMP_ROM={rom_path}',
+                f'-DNESRECOMP_HOST_COMPILER={compiler_path}', f'-DGAME_OUTPUT_DIR={output}',
+                '-DGAME_PPU_OVERRIDE=']
+
+    run(*configure(host, compiler, rom, args.variant))
+    run('cmake', '--build', host, '--parallel', '4')
+    with (host / 'boot.log').open('w') as log:
+        subprocess.run([str(host / 'nes_game'), str(rom), '--frames', '600', '--no-save',
+                        '--screenshot', str(host / 'boot.png')], check=True, cwd=ROOT,
+                       stdout=log, stderr=subprocess.STDOUT)
+    if args.host_only:
+        return
+    sdk = Path(os.environ.get('DEVKITPRO', '/opt/devkitpro')).expanduser().resolve()
+    devkita64 = Path(os.environ.get('DEVKITA64', str(sdk / 'devkitA64'))).expanduser().resolve()
+    native = (devkita64 / 'bin/aarch64-none-elf-gcc').is_file()
+    backend = ('native' if native else 'docker') if args.backend == 'auto' else args.backend
+    extras = ['-DNESRECOMP_SWITCH_SAVES=OFF', '-DNESRECOMP_SWITCH_LTO=ON', '-DNESRECOMP_SWITCH_VERSION=0.2.0',
+              f'-DGAME_PPU_OVERRIDE={args.ppu or ""}']
+    binary = build / ('switch' if backend == 'native' else 'switch-docker')
+    if backend == 'native':
+        if not native:
+            ap.error('Native devkitA64 is not installed; use --backend docker')
+        sdk_env = dict(os.environ, DEVKITPRO=str(sdk), DEVKITA64=str(devkita64))
+        sdk_env['PATH'] = os.pathsep.join(map(str, [devkita64 / 'bin', sdk / 'tools/bin',
+            sdk / 'portlibs/switch/bin', os.environ.get('PATH', '')]))
+        run(*configure(binary, compiler, rom, 'optimized'),
+            f'-DCMAKE_TOOLCHAIN_FILE={sdk}/cmake/Switch.cmake', *extras, env=sdk_env)
+        run('cmake', '--build', binary, '--parallel', '4', env=sdk_env)
+    else:
+        run('docker', 'info', '--format', '{{.Architecture}} {{.ServerVersion}}')
+        prefix = ['docker', 'run', '--rm', '-v', f'{ROOT}:{ROOT}', '-v', f'{rom}:/private/game.nes:ro',
+                  '-w', str(ROOT), IMAGE]
+        linux_compiler = ROOT / 'build/recompiler-linux/NESRecomp'
+        run(*prefix, 'cmake', '-S', engine / 'recompiler', '-B', linux_compiler.parent,
+            '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release')
+        run(*prefix, 'cmake', '--build', linux_compiler.parent, '--parallel', '4')
+        run(*prefix, *configure(binary, linux_compiler, '/private/game.nes', 'optimized'),
+            '-DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake', *extras)
+        run(*prefix, 'cmake', '--build', binary, '--parallel', '4')
+    print(f'Packaged game artifacts: {output}')
+
+if __name__ == '__main__':
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        sys.exit(error.returncode)
