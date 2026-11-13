@@ -56,10 +56,19 @@ the first forest level and exercises movement/jumps. Both LLE and HLE passed:
 The 892 seed addresses were recorded from the title and gameplay routes with
 `--miss-log`; they contain addresses only, not extracted game code. Unvisited
 code retains interpreter fallback. Coverage is not a full-game or speed guarantee.
-The local TriCNES adapter is NTSC-only, so no independent PAL oracle result is
-claimed. Results are under `build/games/adventure-island/test-summary.json`.
+The local TriCNES adapter is NTSC-only. A separate MesenCE PAL test now matches
+903 consecutive first-level frames, with boot alignment independently checked
+against zero-page RAM before input. Run `tests/reference.py` with the setup in
+[REFERENCE_TOOLS.md](../../docs/REFERENCE_TOOLS.md). This is finite route coverage;
+it has not reproduced the user's reported console visual glitches.
+The native/interpreter results remain under `build/games/adventure-island/test-summary.json`.
 The first physical log records 2,006 frames over 106.924 seconds: **18.76 FPS**,
 normal exit and zero saves/dropped audio chunks. It is well below the PAL
 target; picture, sound and controls require the user's qualitative feedback.
 The [hardware findings and shared PAL scheduler work](../../docs/HARDWARE_0.2.3.md)
 record the next optimization and its correctness/desktop measurement evidence.
+
+The 0.1.2 console follow-up improved throughput to **22.98 FPS**; sound and
+controls were confirmed, with visual glitches still reported. The next **0.1.3**
+build uses shared ARM NEON sprite kernels, preserving the validated pixels.
+Its Cortex-A57 speed and the reported glitches still require hardware follow-up.

@@ -12,6 +12,44 @@ index 0015ada..b833cd2 100644
  *.bin
  *.sav
  
+diff --git a/docs/ARM_SPRITE_KERNELS.md b/docs/ARM_SPRITE_KERNELS.md
+new file mode 100644
+index 0000000..e360349
+--- /dev/null
++++ b/docs/ARM_SPRITE_KERNELS.md
+@@ -0,0 +1,32 @@
++# AArch64 sprite kernels
++
++The HLE PPU's sprite mask and shift operations use eight-byte AArch64 NEON
++vectors when `__aarch64__` and `__ARM_NEON` are present. Existing x86-64 SSE2
++and portable implementations remain available. `NESRECOMP_PPU_HLE_FORCE_PORTABLE`
++forces the scalar reference, including on ARM. No architecture header is
++included on an unrelated target.
++
++The kernel loads exactly eight lanes, tests counters before decrementing,
++uses unsigned saturating counter subtraction and shifts only ready sprite
++planes. A weighted horizontal reduction packs the eight high bits into the
++existing priority mask. The HD recorder's shift mask retains the same meaning.
++No guest clock, bus access, mapper behavior, save field or game routine changes.
++
++`cyc_ppu_kernel_test` compares native/scalar operations over every planar row,
++all simultaneous lane masks, all byte-valued counters at every lane and 250,000
++random configurations, including rendering-off and skipped-dot cases.
++`cyc_ppu_span_reference` now explicitly forces portable kernels, so its complete
++machine comparison also checks SIMD against scalar processing. Native interval
++and raster interval tests continue to pass.
++
++Two supplied games retain their 1,800-frame traces, native/interpreter parity,
++state continuation, untraced pixels, PCM and PNG. A separate MesenCE PAL capture
++matches 903 consecutive first-level frames after pre-input boot calibration.
++SDK GCC-generated kernel objects also pass the pure-kernel test under ARM64
++Linux with a test-only assertion bridge; that checks generated instructions,
++not libnx lifecycle or physical-console performance.
++
++Balanced Mac measurements show about 4.80% less process CPU for the tested PAL
++route. Mario's 1.09% result falls inside its A/A noise and is not a demonstrated
++desktop speedup. Switch Cortex-A57 performance still needs measurement. These
++kernels are a shared optimization, not a full-speed or visual-glitch fix claim.
 diff --git a/docs/CORE_PROFILER.md b/docs/CORE_PROFILER.md
 new file mode 100644
 index 0000000..a2ad8c2
@@ -450,7 +488,7 @@ index 0000000..b078fbd
 +costs alongside ordinary frame timings; diagnostic overhead means those FPS
 +figures are not production benchmarks. It has no game-specific branches.
 diff --git a/runner/cyc/CMakeLists.txt b/runner/cyc/CMakeLists.txt
-index 6c9e0ee..616f46c 100644
+index 6c9e0ee..048e885 100644
 --- a/runner/cyc/CMakeLists.txt
 +++ b/runner/cyc/CMakeLists.txt
 @@ -53,6 +53,15 @@ endif()
@@ -482,7 +520,17 @@ index 6c9e0ee..616f46c 100644
  add_test(NAME cyc_rom_read_override
      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_cyc_rom_read_override.py
          --recompiler $<TARGET_FILE:NESRecomp> --out ${CMAKE_CURRENT_BINARY_DIR}/rom-read-override
-@@ -537,6 +552,29 @@ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
+@@ -529,7 +544,8 @@ foreach(kind candidate reference)
+         target_compile_definitions(cyc_ppu_span_${kind} PRIVATE _CRT_SECURE_NO_WARNINGS)
+     endif()
+ endforeach()
+-target_compile_definitions(cyc_ppu_span_reference PRIVATE NESRECOMP_PPU_LLE_REFERENCE=1 NESRECOMP_APU_LEVEL_REFERENCE=1)
++target_compile_definitions(cyc_ppu_span_reference PRIVATE NESRECOMP_PPU_LLE_REFERENCE=1 NESRECOMP_APU_LEVEL_REFERENCE=1
++    NESRECOMP_PPU_HLE_FORCE_PORTABLE=1)
+ target_compile_definitions(cyc_ppu_span_candidate PRIVATE NESRECOMP_APU_VERIFY_LEVELS=1)
+ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
+     ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_ppu_spans.py
+@@ -537,6 +553,29 @@ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
      --candidate $<TARGET_FILE:cyc_ppu_span_candidate>)
  set_tests_properties(cyc_ppu_spans PROPERTIES TIMEOUT 180)
  
@@ -954,6 +1002,71 @@ index b41e849..0fea506 100644
              while (hw.tick < 16) run_pal_tick(hw.tick++);
              hw_region_timing.phase = (uint8_t)((hw_region_timing.phase + 1) % 5);
          } else if (hw.tick == 1) run_ticks_1_to_11();
+diff --git a/runner/cyc/ppu_hle_kernel.h b/runner/cyc/ppu_hle_kernel.h
+index f8699da..b3c7902 100644
+--- a/runner/cyc/ppu_hle_kernel.h
++++ b/runner/cyc/ppu_hle_kernel.h
+@@ -3,9 +3,9 @@
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
+-/* SSE2 is part of the supported x86-64 host ABI. Other targets, including
+- * baseline 32-bit x86, keep the same interface with portable byte operations.
+- * Never import or execute x86 intrinsics on those targets. */
++/* x86-64 uses SSE2 and AArch64 uses NEON. Other targets, including baseline
++ * 32-bit x86, keep the same interface with portable byte operations.
++ * Architecture headers are included only on their matching targets. */
+ #if !defined(NESRECOMP_PPU_HLE_FORCE_PORTABLE) && \
+     (defined(_M_X64) || defined(__x86_64__)) && !defined(_M_ARM64EC)
+ #define NESRECOMP_PPU_HLE_SSE2 1
+@@ -16,6 +16,19 @@
+ #if NESRECOMP_PPU_HLE_SSE2 && defined(_MSC_VER)
+ #include <intrin.h>
+ #endif
++#if !defined(NESRECOMP_PPU_HLE_FORCE_PORTABLE) && defined(__aarch64__) && defined(__ARM_NEON)
++#define NESRECOMP_PPU_HLE_NEON 1
++#include <arm_neon.h>
++/* AArch64 has no PMOVMSKB. Pack eight high bits with byte-lane weights;
++ * the horizontal sum cannot overflow because each weight occurs once. */
++static inline unsigned ppu_hle_movemask8(uint8x8_t value)
++{
++    const uint8x8_t weights = {1, 2, 4, 8, 16, 32, 64, 128};
++    return (unsigned)vaddv_u8(vmul_u8(vshr_n_u8(value, 7), weights));
++}
++#else
++#define NESRECOMP_PPU_HLE_NEON 0
++#endif
+ 
+ static inline unsigned ppu_hle_first_sprite(unsigned mask)
+ {
+@@ -98,6 +111,11 @@ static inline unsigned ppu_hle_sprite_mask(const uint8_t x[8],
+     __m128i bits = _mm_or_si128(_mm_loadl_epi64((const __m128i *)lo),
+                                _mm_loadl_epi64((const __m128i *)hi));
+     return (unsigned)_mm_movemask_epi8(_mm_and_si128(bits, ready)) & 255u;
++#elif NESRECOMP_PPU_HLE_NEON
++    uint8x8_t vx = vld1_u8(x);
++    uint8x8_t ready = skipped ? vdup_n_u8(255) : vceq_u8(vx, vdup_n_u8(0));
++    uint8x8_t bits = vorr_u8(vld1_u8(lo), vld1_u8(hi));
++    return ppu_hle_movemask8(vand_u8(bits, ready));
+ #else
+     unsigned mask = 0;
+     for (unsigned i = 0; i < 8; ++i)
+@@ -121,6 +139,15 @@ static inline unsigned ppu_hle_sprite_shift(uint8_t x[8], uint8_t lo[8],
+     _mm_storel_epi64((__m128i *)lo, vl);
+     _mm_storel_epi64((__m128i *)hi, vh);
+     return (unsigned)_mm_movemask_epi8(ready) & 255u;
++#elif NESRECOMP_PPU_HLE_NEON
++    uint8x8_t vx = vld1_u8(x);
++    uint8x8_t ready = skipped ? vdup_n_u8(255) : vceq_u8(vx, vdup_n_u8(0));
++    if (!skipped) vst1_u8(x, vqsub_u8(vx, vdup_n_u8(1)));
++    if (!render) return 0;
++    uint8x8_t vl = vld1_u8(lo), vh = vld1_u8(hi);
++    vst1_u8(lo, vbsl_u8(ready, vshl_n_u8(vl, 1), vl));
++    vst1_u8(hi, vbsl_u8(ready, vshl_n_u8(vh, 1), vh));
++    return ppu_hle_movemask8(ready);
+ #else
+     unsigned shifted = 0;
+     for (unsigned i = 0; i < 8; ++i) {
 diff --git a/runner/cyc/profile.cmake b/runner/cyc/profile.cmake
 new file mode 100644
 index 0000000..0fc71c1
@@ -1091,6 +1204,35 @@ index 7d5c677..acf3ec7 100644
      CAPTURE_FILE "${NESRECOMP_CYCLE_CAPTURES}"
 +    HARDWARE_PROFILE "${NESRECOMP_HARDWARE_PROFILE}" OPTIMIZATION_MODULES ${NESRECOMP_OPTIMIZATION_MODULES}
      RECOMPILER "${NESRECOMP_HOST_COMPILER}" BIOS "${NESRECOMP_FDS_BIOS}" ${options})
+diff --git a/runner/cyc/tests/ppu_kernel_selftest.c b/runner/cyc/tests/ppu_kernel_selftest.c
+index 0f3185c..0ef28a8 100644
+--- a/runner/cyc/tests/ppu_kernel_selftest.c
++++ b/runner/cyc/tests/ppu_kernel_selftest.c
+@@ -44,6 +44,15 @@ int main(void) {
+         unsigned bit=0;while(!(mask>>bit&1))++bit;
+         assert(ppu_hle_first_sprite(mask)==bit);
+     }
++    /* Every simultaneous lane mask, including all eight high bits: catches
++     * horizontal-pack/overflow mistakes that sparse random lanes can miss. */
++    for(unsigned mask=0;mask<256;++mask) {
++        uint8_t x[8],lo[8],hi[8]={0};
++        for(unsigned i=0;i<8;++i) {
++            x[i]=(mask>>i&1)?0:1;lo[i]=(mask>>i&1)?0x80:0;
++        }
++        check(x,lo,hi);
++    }
+     for(unsigned byte=0;byte<256;++byte)for(unsigned lane=0;lane<8;++lane) {
+         uint8_t x[8]={0},lo[8]={0},hi[8]={0};
+         x[lane]=(uint8_t)byte;lo[lane]=0x81;hi[(lane+1)&7]=(uint8_t)~byte;check(x,lo,hi);
+@@ -53,6 +62,7 @@ int main(void) {
+         for(unsigned i=0;i<8;++i) {x[i]=(uint8_t)random32();lo[i]=(uint8_t)random32();hi[i]=(uint8_t)random32();}
+         check(x,lo,hi);
+     }
+-    puts("PPU kernels: exact row decode, priority and shift; native/portable paths");
++    printf("PPU kernels: exact row decode, priority and shift; native/portable paths (NEON=%d SSE2=%d)\n",
++           NESRECOMP_PPU_HLE_NEON, NESRECOMP_PPU_HLE_SSE2);
+     return 0;
+ }
 diff --git a/runner/cyc/tests/profiler_selftest.c b/runner/cyc/tests/profiler_selftest.c
 new file mode 100644
 index 0000000..9fb2e32
@@ -1617,6 +1759,153 @@ index 0000000..a4d342e
 +        AUTHOR "${NESRECOMP_SWITCH_AUTHOR}" VERSION "${NESRECOMP_SWITCH_VERSION}")
 +    nx_create_nro(${target} NACP "${nacp}")
 +endfunction()
+diff --git a/tools/cyc/mesen_shot/README.md b/tools/cyc/mesen_shot/README.md
+new file mode 100644
+index 0000000..ce1f91a
+--- /dev/null
++++ b/tools/cyc/mesen_shot/README.md
+@@ -0,0 +1,33 @@
++# Independent MesenCE capture
++
++`mesen_shot` runs a supplied NES ROM headlessly on a separate MesenCE core.
++It writes PNGs and raw nine-bit PPU indices at requested frames. `--input`
++accepts the cycle host's button schedule. Optional `--memory` also captures
++internal RAM, primary/secondary OAM and palette memory at PpuFrameDone.
++These are observation hooks, not changes to the reference emulator's algorithms.
++
++`--region ntsc|pal` selects hardware timing explicitly; the default remains
++NTSC. RAM is zeroed, sprite limit is on, and run-ahead/overclocking are off.
++The configured palette is for visual inspection; compare `.idx` files to
++avoid treating RGB palette differences as emulation differences.
++
++On macOS, supply a MesenCE libretro checkout:
++
++```sh
++bash tools/cyc/mesen_shot/build.sh /path/to/MesenCE /path/to/output
++/path/to/output/mesen_shot /private/game.nes /private/captures \
++  --region pal --input /private/route.txt --frame-offset 1 900 1200
++```
++
++The Mac build was tested against [libretro/MesenCE](https://github.com/libretro/MesenCE)
++revision `562ee84de49acbd7866d0c079e61f0dc52cc27f4`, using Apple Clang and
++the native libretro makefile. It builds no .NET UI, installs no system packages,
++and records an explicit library run path. `build.ps1` retains the existing
++Windows static-library workflow. External source/binaries/captures must remain
++outside tracked contribution files; remove their chosen directories to uninstall.
++
++Establish boot/input alignment before comparing gameplay. A one-frame boot
++offset can change sprite ordering while producing mostly identical pictures.
++Use pre-input RAM/state anchors, then apply one fixed offset to both input and
++frame numbers; do not fit an offset independently for each mismatching frame.
++This helper does not make a finite route a full-game or hardware qualification.
+diff --git a/tools/cyc/mesen_shot/build.sh b/tools/cyc/mesen_shot/build.sh
+new file mode 100644
+index 0000000..e6cb8cb
+--- /dev/null
++++ b/tools/cyc/mesen_shot/build.sh
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Native macOS reference tool. Uses a separate supplied MesenCE libretro checkout.
++set -euo pipefail
++if [[ $# -ne 2 || "$(uname -s)" != Darwin ]]; then
++  printf 'Usage on macOS: bash build.sh MESEN_ROOT OUT_DIR\n' >&2
++  exit 2
++fi
++mesen_root="$(cd "$1" && pwd)"
++mkdir -p "$2"
++out_dir="$(cd "$2" && pwd)"
++source_dir="$(cd "$(dirname "$0")" && pwd)"
++make -C "$mesen_root" -f Makefile.libretro -j"${MESEN_BUILD_JOBS:-4}" \
++  CXX=clang++ CC=clang 'LINKOPTIONS=-Wl,-install_name,@rpath/mesen2_libretro.dylib'
++clang++ -std=c++17 -O2 -DLIBRETRO -I "$mesen_root" -I "$mesen_root/Core" \
++  -I "$mesen_root/Utilities" "$source_dir/mesen_shot.cpp" \
++  "$mesen_root/mesen2_libretro.dylib" -Wl,-rpath,"$mesen_root" -o "$out_dir/mesen_shot"
++printf 'Reference tool: %s/mesen_shot\n' "$out_dir"
+diff --git a/tools/cyc/mesen_shot/mesen_shot.cpp b/tools/cyc/mesen_shot/mesen_shot.cpp
+index 9fea585..ef46811 100644
+--- a/tools/cyc/mesen_shot/mesen_shot.cpp
++++ b/tools/cyc/mesen_shot/mesen_shot.cpp
+@@ -3,7 +3,7 @@
+  * runner/cyc alongside the TriCNES oracle and NES_MiSTer's APU.
+  *
+  *   mesen_shot <rom.nes> <out-dir> [--input FILE] [--frame-offset K]
+- *              [--hw-options LIST] <frame> [frame ...]
++ *              [--hw-options LIST] [--region ntsc|pal] [--memory] <frame> [frame ...]
+  *
+  * Runs the ROM on Mesen's core with no window, and writes <out-dir>/<frame>.png
+  * at the end of each requested frame, so a recompiled build's --screenshot
+@@ -34,6 +34,7 @@
+ 
+ #include "Core/Shared/Emulator.h"
+ #include "Core/Shared/EmuSettings.h"
++#include "Core/Shared/MemoryType.h"
+ #include "Core/Shared/SettingTypes.h"
+ #include "Core/Shared/NotificationManager.h"
+ #include "Core/Shared/Interfaces/INotificationListener.h"
+@@ -266,6 +267,7 @@ public:
+ 	std::set<uint32_t> Wanted;
+ 	std::atomic<uint32_t> Frame{0};
+ 	std::atomic<bool> Done{false};
++	bool CaptureMemory = false;
+ 	uint32_t Palette[512] = {};
+ 
+ 	void ProcessNotification(ConsoleNotificationType type, void* parameter) override
+@@ -286,6 +288,19 @@ public:
+ 			/* Raw indices, for an exact comparison against another machine's
+ 			 * picture without a palette in the way. */
+ 			std::string base = OutDir + "/" + std::to_string(frame);
++			if(CaptureMemory) {
++				static const struct { MemoryType Type; const char* Suffix; } memories[] = {
++					{MemoryType::NesInternalRam, ".ram"}, {MemoryType::NesSpriteRam, ".oam"},
++					{MemoryType::NesSecondarySpriteRam, ".oam2"}, {MemoryType::NesPaletteRam, ".pal"}
++				};
++				for(const auto& memory : memories) {
++					auto data = Emu->GetMemory(memory.Type);
++					if(data.Memory && data.Size) {
++						std::ofstream dump(base + memory.Suffix, std::ios::binary);
++						dump.write((const char*)data.Memory, data.Size);
++					}
++				}
++			}
+ 			std::ofstream idx(base + ".idx", std::ios::binary);
+ 			idx.write((char*)pixels, (std::streamsize)count * 2);
+ 			idx.close();
+@@ -310,7 +325,7 @@ int main(int argc, char** argv)
+ {
+ 	if(argc < 4) {
+ 		std::cerr << "usage: mesen_shot <rom.nes> <out-dir> [--input FILE] [--frame-offset K] [--hw-options LIST] "
+-		             "<frame> [frame ...]\n";
++		             "[--region ntsc|pal] [--memory] <frame> [frame ...]\n";
+ 		return 2;
+ 	}
+ 
+@@ -320,9 +335,17 @@ int main(int argc, char** argv)
+ 	std::string inputFile;
+ 	std::string hwOptions;
+ 	uint32_t frameOffset = 0;
++	ConsoleRegion region = ConsoleRegion::Ntsc;
+ 	for(int i = 3; i < argc; i++) {
+ 		if(!strcmp(argv[i], "--input") && i + 1 < argc) {
+ 			inputFile = argv[++i];
++		} else if(!strcmp(argv[i], "--memory")) {
++			shooter->CaptureMemory = true;
++		} else if(!strcmp(argv[i], "--region") && i + 1 < argc) {
++			std::string value = argv[++i];
++			if(value == "pal") region = ConsoleRegion::Pal;
++			else if(value == "ntsc") region = ConsoleRegion::Ntsc;
++			else { std::cerr << "--region: ntsc or pal\n"; return 2; }
+ 		} else if(!strcmp(argv[i], "--hw-options") && i + 1 < argc) {
+ 			hwOptions = argv[++i];
+ 			if(hwOptions == "none") {
+@@ -351,7 +374,7 @@ int main(int argc, char** argv)
+ 	settings->GetNesConfig().RamPowerOnState = RamState::AllZeros;
+ 	settings->GetNesConfig().RemoveSpriteLimit = false;
+ 	settings->GetNesConfig().DisablePpu2004Reads = false;
+-	settings->GetNesConfig().Region = ConsoleRegion::Ntsc;
++	settings->GetNesConfig().Region = region;
+ 	settings->GetNesConfig().EnableOamDecay = false;
+ 	ApplyHardwareOptions(settings->GetNesConfig(), hwOptions);
+ 	/* ControllerConfig::Type defaults to None, so a headless build has no
 diff --git a/tools/cyc/test_cyc_profiles.py b/tools/cyc/test_cyc_profiles.py
 new file mode 100644
 index 0000000..04ee1df

@@ -62,7 +62,7 @@ def main():
     assert hashes['baseline'] == hashes['optimized'], 'LLE/HLE frame hashes differ'
     assert captures['baseline'] == captures['optimized'], 'LLE/HLE untraced raw frames, PCM or PNG differ'
     summary = dict(region='PAL', variants=summaries, lle_hle_traces_frames_pcm_png_match=True,
-                   independent_oracle='Not run: the local TriCNES adapter does not implement PAL timing')
+                   independent_oracle='Run tests/reference.py for the separate MesenCE PAL comparison')
     (base / 'test-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
 

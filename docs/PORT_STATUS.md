@@ -1,5 +1,12 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+Current follow-up: [0.2.4/0.1.2 measurements and pixel investigation](HARDWARE_0.2.4.md).
+The PAL change produced 22.98 FPS on Switch (22.48% more throughput); Mario
+remains at 46.69 FPS. The reported visual glitches are not reproduced by the
+independent calibrated 903-frame PAL comparison. Shared ARM sprite kernels are
+validated and deployed as Mario **0.2.5** and Adventure Island **0.1.3**, with
+saving/profiling OFF. Their console performance is not yet measured.
+
 Newest hardware evidence: [Mario 0.2.3 and Adventure Island 0.1.1](HARDWARE_0.2.3.md).
 Both logs show normal exit with no saves or dropped audio chunks. Mario averaged
 46.44 FPS; Adventure Island averaged 18.76 FPS. A shared PAL clock-dispatch
@@ -36,8 +43,10 @@ Implemented in the local NESRecomp checkout at
 reproducible contribution is [patches/nesrecomp-switch.patch](../patches/nesrecomp-switch.patch),
 including its upstream `docs/SWITCH.md`. The Mario checkout is unchanged.
 The NESRecomp contribution is committed locally as
-`ccc34150f58f4e75f24cee03eb49fa187b27b29e` (`codex/switch-runner`), following
-the core profiler `20d35364da66dc9eaeb2252e45c25c1ce7df32d5`,
+`56b926508dea5d86fd4f58801afb2dfe30560be5` (`codex/switch-runner`), following
+the ARM kernels `8d2a8696ea31146fa4a3fced93795e36b36bb21a`,
+PAL scheduler `ccc34150f58f4e75f24cee03eb49fa187b27b29e`,
+core profiler `20d35364da66dc9eaeb2252e45c25c1ce7df32d5`,
 version banner `8eeb9523344254d66a5ed5ff88661d9d9736bf3b`,
 architecture `d248afef21bc80631f53a44c9ebb6efcb2147dd2`,
 0.2 `a4e9f74109067dc5105c1059322efc264d436b75` and original

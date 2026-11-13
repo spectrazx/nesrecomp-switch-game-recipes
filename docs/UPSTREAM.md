@@ -1,5 +1,27 @@
 # Notes for future NESRecomp contributions
 
+The shared ARM sprite-kernel work (`8d2a8696ea31146fa4a3fced93795e36b36bb21a`) is isolated in
+`patches/nesrecomp-arm-sprite-kernels.patch` against
+`ccc34150f58f4e75f24cee03eb49fa187b27b29e`. It adds AArch64 NEON to the
+existing HLE mask/shift interface, retains scalar/SSE2 implementations and
+adds exhaustive lane-mask checks plus a forced-scalar full-machine reference.
+All game/state/pixel/audio comparisons pass. Actual devkitA64-generated pure
+kernel instructions are exercised in ARM64 Linux via the workspace test shim.
+The Mac PAL route improves 4.80%; Mario's result is within measurement noise.
+No physical speed claim or visual-glitch fix is made.
+
+Separate reference-tool work (`56b926508dea5d86fd4f58801afb2dfe30560be5`) is
+exported against the ARM commit in `patches/nesrecomp-mesen-pal.patch`:
+explicit PAL/NTSC selection, optional read-only memory captures, and native
+macOS building with an external MesenCE libretro checkout. The existing NTSC
+default/Windows build remain. Test dependencies and private captures are not
+included in either patch or game binaries. The workspace owns the calibrated
+title route in `games/adventure-island/tests/reference.py` and documents the
+reference revision, reproduction and uninstall in [REFERENCE_TOOLS.md](REFERENCE_TOOLS.md).
+The new independent check matches all 903 requested PAL gameplay frames after
+pre-input zero-page alignment. The user's visual report remains unresolved
+outside that coverage; it is not dismissed as normal sprite flicker.
+
 The PAL scheduler follow-up (`ccc34150f58f4e75f24cee03eb49fa187b27b29e`)
 is isolated in `patches/nesrecomp-pal-clock.patch`,
 against `20d35364da66dc9eaeb2252e45c25c1ce7df32d5`. It removes ordinary

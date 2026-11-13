@@ -21,6 +21,8 @@ The confirmed 0.2.1 run and the next diagnostic build are documented in
 [the 0.2.2 profiling notes](docs/PROFILING_0.2.2.md).
 The subsequent longer runs are recorded in
 [the Mario/Adventure Island hardware findings](docs/HARDWARE_0.2.3.md).
+The next [console measurements and independent pixel investigation](docs/HARDWARE_0.2.4.md)
+record the confirmed PAL gain, remaining slowdown and unconfirmed visual issue.
 
 Build and test the Mario module from this repository root, with Docker running
 if a native devkitPro SDK is unavailable:
