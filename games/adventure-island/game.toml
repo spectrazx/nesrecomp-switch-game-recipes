@@ -1,0 +1,3 @@
+[game]
+output_prefix = "adventure-island"
+cycle_accurate = true

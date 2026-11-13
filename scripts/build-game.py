@@ -26,6 +26,7 @@ def main():
     ap.add_argument('--ppu', choices=['LLE', 'HLE'], help='Explicit Switch PPU override for comparisons')
     ap.add_argument('--output-dir', type=Path, help='Override packaged NRO directory')
     ap.add_argument('--version', help='Override games/<game>/VERSION for this build')
+    ap.add_argument('--profile-core', action='store_true', help='Enable sampled Switch core timing diagnostics')
     args = ap.parse_args()
     if not args.game or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in args.game):
         ap.error('Invalid game module name')
@@ -55,6 +56,7 @@ def main():
                 f'-DNESRECOMP_ROOT={engine}', f'-DNESRECOMP_ROM={rom_path}',
                 f'-DNESRECOMP_HOST_COMPILER={compiler_path}', f'-DGAME_OUTPUT_DIR={output}',
                 f'-DNESRECOMP_GAME_VERSION={version}',
+                '-DNESRECOMP_CORE_PROFILER=OFF',
                 '-DGAME_PPU_OVERRIDE=']
 
     run(*configure(host, compiler, rom, args.variant))
@@ -70,6 +72,7 @@ def main():
     native = (devkita64 / 'bin/aarch64-none-elf-gcc').is_file()
     backend = ('native' if native else 'docker') if args.backend == 'auto' else args.backend
     extras = ['-DNESRECOMP_SWITCH_SAVES=OFF', '-DNESRECOMP_SWITCH_LTO=ON', f'-DNESRECOMP_SWITCH_VERSION={version}',
+              f'-DNESRECOMP_CORE_PROFILER={"ON" if args.profile_core else "OFF"}',
               f'-DGAME_PPU_OVERRIDE={args.ppu or ""}']
     binary = build / ('switch' if backend == 'native' else 'switch-docker')
     if backend == 'native':
@@ -98,6 +101,7 @@ def main():
     artifact = output / artifact_name
     run(sys.executable, ROOT / 'scripts/inspect-nro.py', artifact, '--expect-version', version)
     manifest = dict(game=args.game, version=version, artifact=artifact_name,
+                    core_profiler=args.profile_core,
                     sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                     rom_sha256=hashlib.sha256(rom.read_bytes()).hexdigest())
     manifest_path = output / 'build.json'

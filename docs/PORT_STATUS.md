@@ -1,5 +1,11 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+Latest local follow-up: [0.2.1 hardware evidence and diagnostic profiling](PROFILING_0.2.2.md).
+Mario **0.2.3** (sampled core profiling) and [Adventure Island **0.1.1**](../games/adventure-island/README.md)
+(European PAL, profiling OFF) are built and deployed to separate SD folders.
+The new module passes its desktop route; both packages still need the next
+console playtest. The latest measured Mario performance is the confirmed 0.2.1 run.
+
 The subsequent [modular architecture](ARCHITECTURE.md) separates game recipes
 under `games/` from the Switch frontend and adds opt-in shared hardware
 contracts/static build modules. [Upstream contribution notes](UPSTREAM.md)
@@ -9,7 +15,7 @@ and included in the cumulative patch below.
 Canonical new outputs use `build/games/smb1/`; paths below describe the retained
 0.1/0.2 evidence and compatibility commands.
 
-The latest packaging follow-up is **0.2.1**, built and copied through
+The initial versioning follow-up was **0.2.1**, built and copied through
 `mise run copy`. Versions now come from `games/smb1/VERSION` and advance after
 a verified deployment; the NACP and runtime banner agree. This is a versioning
 change, with no additional speed improvements or new console qualification.
@@ -23,8 +29,9 @@ Implemented in the local NESRecomp checkout at
 reproducible contribution is [patches/nesrecomp-switch.patch](../patches/nesrecomp-switch.patch),
 including its upstream `docs/SWITCH.md`. The Mario checkout is unchanged.
 The NESRecomp contribution is committed locally as
-`8eeb9523344254d66a5ed5ff88661d9d9736bf3b` (`codex/switch-runner`), following
-the architecture `d248afef21bc80631f53a44c9ebb6efcb2147dd2`,
+`20d35364da66dc9eaeb2252e45c25c1ce7df32d5` (`codex/switch-runner`), following
+the version banner `8eeb9523344254d66a5ed5ff88661d9d9736bf3b`,
+architecture `d248afef21bc80631f53a44c9ebb6efcb2147dd2`,
 0.2 `a4e9f74109067dc5105c1059322efc264d436b75` and original
 `4eed78d9d6abf60c651942bc3e60f1762370133d` commits.
 The parent workspace records the exported patch, scripts and results in its

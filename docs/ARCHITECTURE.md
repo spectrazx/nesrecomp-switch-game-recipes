@@ -69,9 +69,12 @@ the title module.
    then measure frame time and audio on physical hardware before selecting a
    faster default. Native coverage alone does not establish full speed.
 
-The framework's synthetic two-target profile test checks extension isolation
-without requiring another commercial ROM. Adventure Island has not yet been
-added or qualified; its ROM revision and board must be checked first.
+The framework's synthetic two-target profile test checks extension isolation.
+The second module, [Adventure Island Classic](../games/adventure-island/README.md),
+uses generic CNROM hardware with explicit PAL timing and its own seeds/tests.
+Both renderer variants pass the desktop route; physical-console qualification
+remains separate. Optional sampled core-clock diagnostics live in NESRecomp;
+the workspace chooses which builds enable them.
 
 ## Refactor validation
 

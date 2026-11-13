@@ -20,6 +20,31 @@ remain workspace policy, outside the engine. `mise run copy` exercised this
 workflow and deployed/verified version `0.2.1`; six synthetic unit tests cover
 incrementing, invalid versions, stale manifests and build/copy/mount failures.
 
+Contribution `20d35364da66dc9eaeb2252e45c25c1ce7df32d5` adds optional shared device-clock sampling, default OFF,
+with a host-injected monotonic timer and original-fixture tests. It is separate
+from hardware contracts and per-title recipes. The Switch consumer reports
+path estimates/raw means and effective region. Empty-scope calibration and a
+median of nine sample-group means limit timer and scheduler-pause bias;
+diagnostic overhead and statistical error remain explicit. No guest clock,
+bus timing, renderer algorithm or state layout is changed.
+
+`patches/nesrecomp-core-profiler.patch` isolates this follow-up against
+`8eeb9523344254d66a5ed5ff88661d9d9736bf3b`; the complete patch still restores
+the entire workspace contribution against the pinned upstream base. The new
+Adventure Island module, PAL recipe, 892 entry-point seed addresses and its
+tests stay in this workspace, with no title-specific code added to the engine.
+
+Follow-up validation: CTest `cyc_profiler_test` checks calibration, randomized
+sample counts, a deliberately huge scheduler outlier, reporting/reset and a
+missing clock. The sampled Switch frontend passes 1,900 paced dummy-driver
+frames without saves and emits real profile records. A sampled Mario optimized
+run preserves all 1,800 retained untraced frame records, WAV and PNG. Both PAL
+Adventure Island variants match native/interpreter execution, 599 resumed
+frames, and each other's untraced raw frames/PCM/PNG. Existing project and
+deployment tests pass. The NTSC-only local TriCNES adapter is not claimed as
+a PAL oracle. Switch package versions/flags and copied SHA-256 hashes are
+verified; new physical-console speed results are not yet available.
+
 - **Generic profiles and static build extensions:** `runner/cyc/profile.cmake`,
   `cyc_profile.h`, additive arguments on `nesrecomp_add_cycle_game`, standalone
   cache options, an early startup contract check, original-fixture tests and

@@ -7,3 +7,15 @@ python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-r
 [tasks.build]
 description = "Build Mario at the current version without incrementing or copying"
 run = 'python3 scripts/build-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}"'
+
+[tasks.copy-profile]
+description = "Build the next Mario patch with sampled core timings and copy it to SD"
+run = 'python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}" --profile-core'
+
+[tasks.build-adventure]
+description = "Build Adventure Island Classic (Europe) at its current version"
+run = 'python3 scripts/build-game.py adventure-island --rom "${NESRECOMP_ADVENTURE_ISLAND_ROM:-Adventure Island Classic (Europe).nes}"'
+
+[tasks.copy-adventure]
+description = "Build the next Adventure Island patch and copy the verified PAL game to SD"
+run = 'python3 scripts/deploy-game.py adventure-island --rom "${NESRECOMP_ADVENTURE_ISLAND_ROM:-Adventure Island Classic (Europe).nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"'

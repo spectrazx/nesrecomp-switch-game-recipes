@@ -17,6 +17,8 @@ The current **0.2 test build disables saving and automatic resume** while
 addressing the slowdown found in the first Switch playtest. It uses the faster
 PPU path, `-O3`, link-time optimization and requests presentation without VSync.
 See [the hardware findings and performance checks](docs/PERFORMANCE_V2.md).
+The confirmed 0.2.1 run and the next diagnostic build are documented in
+[the 0.2.2 profiling notes](docs/PROFILING_0.2.2.md).
 
 Build and test the Mario module from this repository root, with Docker running
 if a native devkitPro SDK is unavailable:
@@ -54,6 +56,8 @@ The JSON records the version and executable/ROM SHA-256 hashes; it contains no
 ROM content. Saves remain disabled. Existing `saves/` files are preserved.
 
 `mise run build` builds the current version without incrementing or copying.
+`mise run copy-profile` deploys the next Mario patch with sampled core timing
+logs. Profiling adds overhead and is OFF in ordinary builds.
 Both tasks default to `SMB.nes`; set `NESRECOMP_SMB_ROM` to use another path.
 Set `NESRECOMP_SD_ROOT` if the SD mounts somewhere other than `/Volumes/Untitled`.
 The copy task checks that this is a mounted volume before building and copying.
@@ -68,3 +72,18 @@ Eject the SD through Finder when finished, or run `diskutil eject /Volumes/Untit
 On the Switch, launch **Super Mario Bros. Recomp** through the homebrew menu.
 Plus starts the game; D-pad / left stick and A/B control it.
 L + R + Plus exits. ZL/ZR save/load shortcuts are disabled in this build.
+
+## Adventure Island Classic (Europe)
+
+The second module uses the supplied European CNROM ROM with explicit PAL
+timing (about 50 FPS at full speed). [Its validation and controls](games/adventure-island/README.md)
+describe the current first-level test coverage and remaining console checks.
+
+```sh
+mise run build-adventure
+mise run copy-adventure
+```
+
+These default to `Adventure Island Classic (Europe).nes`; override
+`NESRECOMP_ADVENTURE_ISLAND_ROM` if needed. The game gets a separate launcher
+entry and SD directory, `switch/nesrecomp/adventure-island/`.
