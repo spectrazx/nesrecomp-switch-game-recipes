@@ -1,11 +1,16 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+Current follow-up: [0.2 performance build with saving disabled](PERFORMANCE_V2.md).
+The original 0.1 contribution and the 0.2 follow-up are committed locally;
+the exported patch contains their combined changes against the upstream base.
+
 Implemented in the local NESRecomp checkout at
 `.local/src/nesrecomp`, branch `codex/switch-runner`. The reviewable and
 reproducible contribution is [patches/nesrecomp-switch.patch](../patches/nesrecomp-switch.patch),
 including its upstream `docs/SWITCH.md`. The Mario checkout is unchanged.
 The NESRecomp contribution is committed locally as
-`4eed78d9d6abf60c651942bc3e60f1762370133d` (`codex/switch-runner`).
+`a4e9f74109067dc5105c1059322efc264d436b75` (`codex/switch-runner`), following
+the original `4eed78d9d6abf60c651942bc3e60f1762370133d` commit.
 The parent workspace records the exported patch, scripts and results in its
 own local commit. No PR, remote write or publishing has been performed.
 
@@ -59,7 +64,7 @@ generated C remain under ignored local directories.
 | Actual Mario generation/boot/build | Passed with the user-supplied ROM; NRO produced |
 | Mario scripted gameplay | 1800 frames in World 1-1; native/interpreter hashes identical |
 | Mario save-state continuation | All 1199 remaining frame hashes identical after reload |
-| Physical Switch playtest/performance/audio/suspend | Not run: no console connected |
+| Physical Switch 0.2 user test | 46.36 FPS over 115 seconds; normal exit, saves off; full speed and suspend remain unfinished |
 
 Native tests use actual SDL textures, renderer calls, audio-stream conversion
 and queues with dummy drivers. They do not establish working console GPU/audio

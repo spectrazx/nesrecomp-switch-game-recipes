@@ -7,11 +7,14 @@ cmake -S "$engine/recompiler" -B "$engine/build/recompiler" -G Ninja -DCMAKE_BUI
 cmake --build "$engine/build/recompiler" --parallel 4
 python3 "$engine/tools/cyc/test_switch_host.py" --out "$engine/build/switch-host-contract" \
   --recompiler "$engine/build/recompiler/NESRecomp"
+python3 "$engine/tools/cyc/test_switch_host.py" --out "$engine/build/switch-host-no-saves" \
+  --recompiler "$engine/build/recompiler/NESRecomp" --no-saves
 image=devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282
 docker run --rm -v "$PWD:$PWD" -w "$engine" "$image" bash -c '
   set -euo pipefail
   cmake -S build/switch-host-contract/project -B build/switch-cross-fixture -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release \
+    -DNESRECOMP_SWITCH_SAVES=OFF -DNESRECOMP_SWITCH_VERSION=0.2.0
   cmake --build build/switch-cross-fixture --parallel 4
 '
 python3 scripts/inspect-nro.py "$engine/build/switch-cross-fixture/switch_fixture.nro"

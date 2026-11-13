@@ -10,6 +10,7 @@ bash scripts/prepare-sources.sh
 engine="$workspace/.local/src/nesrecomp"
 mario="$workspace/.local/src/SuperMarioBrosNESRecomp"
 config="$workspace/examples/smb-vanilla.toml"
+switch_ppu="${NESRECOMP_SWITCH_PPU:-HLE}"
 mkdir -p build/smb1
 python3 "$mario/tools/verify_usa_rom.py" --rom "$NESRECOMP_SMB_ROM" \
   --crc D445F698 --mapper 0 --title 'Super Mario Bros.'
@@ -29,7 +30,7 @@ if [[ ! -x "$DEVKITA64/bin/aarch64-none-elf-gcc" ]]; then
   docker info > /dev/null
   # Only the supplied ROM file is exposed outside the workspace mount.
   # Linux cannot run the Mach-O host compiler; build a Linux host compiler too.
-  docker run --rm -v "$workspace:$workspace" -v "$NESRECOMP_SMB_ROM:/private/smb1.nes:ro" \
+  docker run --rm -e NESRECOMP_SWITCH_PPU="$switch_ppu" -v "$workspace:$workspace" -v "$NESRECOMP_SMB_ROM:/private/smb1.nes:ro" \
     -w "$workspace" "$image" bash -c '
       set -euo pipefail
       cmake -S .local/src/nesrecomp/recompiler -B build/recompiler-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -37,6 +38,8 @@ if [[ ! -x "$DEVKITA64/bin/aarch64-none-elf-gcc" ]]; then
       cmake -S .local/src/nesrecomp/runner/cyc/project -B build/smb1/switch-docker -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release \
         -DNESRECOMP_RECOMP_UI=OFF -DNESRECOMP_HOST_COMPILER="$PWD/build/recompiler-linux/NESRecomp" \
+        -DNESRECOMP_PPU_IMPL="$NESRECOMP_SWITCH_PPU" -DNESRECOMP_SWITCH_SAVES=OFF \
+        -DNESRECOMP_SWITCH_LTO=ON -DNESRECOMP_SWITCH_VERSION=0.2.0 \
         -DNESRECOMP_ROM=/private/smb1.nes -DNESRECOMP_GAME_CONFIG="$PWD/examples/smb-vanilla.toml" \
         -DNESRECOMP_CYCLE_SEEDS="$PWD/.local/src/SuperMarioBrosNESRecomp/cyc_seeds.txt" \
         -DNESRECOMP_SWITCH_GAME_DIR=sdmc:/switch/nesrecomp/smb1 \
@@ -50,6 +53,8 @@ fi
 cmake -S "$engine/runner/cyc/project" -B build/smb1/switch -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
   -DCMAKE_BUILD_TYPE=Release -DNESRECOMP_RECOMP_UI=OFF \
+  -DNESRECOMP_PPU_IMPL="$switch_ppu" -DNESRECOMP_SWITCH_SAVES=OFF \
+  -DNESRECOMP_SWITCH_LTO=ON -DNESRECOMP_SWITCH_VERSION=0.2.0 \
   -DNESRECOMP_HOST_COMPILER="$workspace/build/recompiler/NESRecomp" \
   -DNESRECOMP_ROM="$NESRECOMP_SMB_ROM" -DNESRECOMP_GAME_CONFIG="$config" \
   -DNESRECOMP_CYCLE_SEEDS="$mario/cyc_seeds.txt" \

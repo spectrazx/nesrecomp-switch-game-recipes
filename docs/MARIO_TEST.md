@@ -1,5 +1,10 @@
 # Vanilla Mario test — 2026-11-13
 
+This records the original **0.1** build. The user subsequently confirmed boot,
+demo playback, game start, controls and music on Switch, but reported slow
+execution and a save error. The current **0.2** build disables saving and
+targets performance; see [the new test record](PERFORMANCE_V2.md).
+
 The user's `SMB.nes` was copied to ignored `.local/roms/SMB.nes`. Both files
 retain SHA-256 `f61548fdf1670cffefcc4f0b7bdcdd9eaba0c226e3b74f8666071496988248de`.
 The supplied ROM passes the upstream audited mapper-0 profile, payload CRC
@@ -7,7 +12,7 @@ The supplied ROM passes the upstream audited mapper-0 profile, payload CRC
 
 ## Produced artifact
 
-`build/smb1/SuperMarioBrosRecomp.nro` — 10,242,245 bytes. NRO0 sections,
+The archived `build/smb1/hardware-v1/SuperMarioBrosRecomp.nro` is 10,242,245 bytes. NRO0 sections,
 asset section, NACP size and title (`Super Mario Bros. Recomp`) passed checks.
 An identical copy is staged under:
 
@@ -54,7 +59,10 @@ mean stable console audio must still be established on hardware. Uncapped
 dummy-driver runs intentionally generate audio faster than real time and also
 drop chunks at the bounded queue; they are not playback-quality measurements.
 
-## Copy to the Switch
+## Original 0.1 SD layout and controls
+
+The current README has the 0.2 copy commands and controls. The save controls
+below apply only to the original 0.1 build.
 
 Copy the contents of `build/smb1/sd-card/` to the SD root, then copy your original
 `SMB.nes` into the same game folder under the name `rom.nes`:
