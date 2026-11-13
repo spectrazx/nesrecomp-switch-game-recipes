@@ -1,0 +1,9 @@
+[tasks.copy]
+description = "Build the next Mario patch version and copy the verified package to the SD"
+run = '''
+python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"
+'''
+
+[tasks.build]
+description = "Build Mario at the current version without incrementing or copying"
+run = 'python3 scripts/build-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}"'

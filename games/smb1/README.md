@@ -8,6 +8,10 @@ The required ROM has payload CRC32 `D445F698` and mapper 0. The original image
 is supplied privately through `--rom`; the build does not alter or redistribute it.
 The `nrom-ntsc` core profile checks its board and timing contract. Title and
 artifact metadata, seed selection and renderer choices live in `game.cmake`.
+`VERSION` owns the displayed release version. `mise run copy` builds and
+deploys the next patch version, updating this file after verification; use
+`mise run build` to build the current version. The NRO metadata and runtime
+startup banner receive the same version, with checksums recorded in `build.json`.
 
 The baseline desktop variant uses LLE PPU. The optimized variant uses the
 existing shared HLE PPU and LTO; the Switch recipe selects this variant.

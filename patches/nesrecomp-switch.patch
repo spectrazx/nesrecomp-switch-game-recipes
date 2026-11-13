@@ -101,10 +101,10 @@ index 0000000..3868d51
 +`test_cyc_project.py` continues to check default integration and regeneration.
 diff --git a/docs/SWITCH.md b/docs/SWITCH.md
 new file mode 100644
-index 0000000..d0d8178
+index 0000000..33fb2df
 --- /dev/null
 +++ b/docs/SWITCH.md
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,253 @@
 +# Nintendo Switch 1 cycle runner (experimental)
 +
 +An opt-in libnx/SDL2 host for one compiled cartridge per `.nro`. It reuses the
@@ -122,6 +122,12 @@ index 0000000..d0d8178
 +frame timings every five seconds. No clocks or gameplay timing are changed.
 +
 +## Scope
++
++`NESRECOMP_SWITCH_VERSION` supplies both the NACP display version and the
++runtime startup banner through `CYC_SWITCH_VERSION`. Callers should pass their
++release version explicitly; changing it regenerates metadata and recompiles
++the banner. The frontend does not maintain a version counter. A calling
++workspace may own per-game versions and deployment policy separately.
 +
 +The frontend remains independent of game recipes. Optional shared
 +[hardware profiles and static modules](CYCLE_PROFILES.md) live in the cycle
@@ -679,10 +685,10 @@ index 0000000..514c9ae
 +void cyc_diagnostics_exit(int code) { fprintf(stderr, "exit=%d\n", code); }
 diff --git a/runner/switch/host.c b/runner/switch/host.c
 new file mode 100644
-index 0000000..64bfdcf
+index 0000000..cbd9e5f
 --- /dev/null
 +++ b/runner/switch/host.c
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,377 @@
 +/* Vanilla cartridge host. The shared cyc_host.c still owns ROM validation,
 + * power-on, session setup, battery storage and the application's only main. */
 +#include <SDL.h>
@@ -710,6 +716,9 @@ index 0000000..64bfdcf
 +#define SLOT_PATH CYC_SWITCH_GAME_DIR "/saves/slot.cycstate"
 +#ifndef CYC_SWITCH_SAVES
 +#define CYC_SWITCH_SAVES 0
++#endif
++#ifndef CYC_SWITCH_VERSION
++#define CYC_SWITCH_VERSION "development"
 +#endif
 +
 +static SDL_AudioDeviceID audio;
@@ -781,7 +790,7 @@ index 0000000..64bfdcf
 +    if (chdir(CYC_SWITCH_GAME_DIR)) return 0;
 +    if (!freopen(CYC_SWITCH_GAME_DIR "/runtime.log", "w", stderr)) return 0;
 +    setvbuf(stderr, NULL, _IONBF, 0);
-+    fprintf(stderr, "Switch runner 0.2: saves=%s\n", CYC_SWITCH_SAVES ? "enabled" : "disabled");
++    fprintf(stderr, "Switch runner %s: saves=%s\n", CYC_SWITCH_VERSION, CYC_SWITCH_SAVES ? "enabled" : "disabled");
 +    return 1;
 +}
 +
@@ -1059,10 +1068,10 @@ index 0000000..64bfdcf
 +}
 diff --git a/runner/switch/switch.cmake b/runner/switch/switch.cmake
 new file mode 100644
-index 0000000..ce07056
+index 0000000..a4d342e
 --- /dev/null
 +++ b/runner/switch/switch.cmake
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +# Switch packaging and the small vanilla SDL host. Hardware sources remain in cyc.cmake.
 +include_guard(GLOBAL)
 +if(NOT DEFINED NESRECOMP_SWITCH_GAME_DIR)
@@ -1092,6 +1101,7 @@ index 0000000..ce07056
 +    target_sources(${target} PRIVATE "${dir}/host.c" "${dir}/diagnostics.c")
 +    target_compile_definitions(${target} PRIVATE CYC_WITH_SDL CYC_SWITCH
 +        CYC_SWITCH_SAVES=$<BOOL:${NESRECOMP_SWITCH_SAVES}>
++        "CYC_SWITCH_VERSION=\"${NESRECOMP_SWITCH_VERSION}\""
 +        "CYC_SWITCH_GAME_DIR=\"${NESRECOMP_SWITCH_GAME_DIR}\"")
 +    target_include_directories(${target} PRIVATE "${dir}")
 +    target_link_libraries(${target} PRIVATE SDL2::SDL2)
@@ -1227,10 +1237,10 @@ index 0000000..04ee1df
 +    main()
 diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
 new file mode 100644
-index 0000000..268497d
+index 0000000..bfe4e58
 --- /dev/null
 +++ b/tools/cyc/test_switch_host.py
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,145 @@
 +#!/usr/bin/env python3
 +"""ROM-free Switch host contracts, using SDL dummy drivers on the native host.
 +
@@ -1303,6 +1313,7 @@ index 0000000..268497d
 +    target_sources(switch_fixture PRIVATE "${{NESRECOMP_ROOT}}/runner/switch/host.c"
 +        "${{NESRECOMP_ROOT}}/runner/switch/diagnostics.c")
 +    target_compile_definitions(switch_fixture PRIVATE CYC_WITH_SDL CYC_SWITCH
++        CYC_SWITCH_VERSION="contract-test"
 +        CYC_SWITCH_SAVES={int(not args.no_saves)}
 +        CYC_SWITCH_GAME_DIR="{data.as_posix()}")
 +    target_link_libraries(switch_fixture PRIVATE SDL2::SDL2)
@@ -1326,6 +1337,7 @@ index 0000000..268497d
 +        save_dir.rename(parked); save_dir.write_text('not a directory')
 +        run([exe, '--exit-after', '1900'], 'no-saves-checkpoint', env=env)
 +        log = (data / 'runtime.log').read_text()
++        assert 'Switch runner contract-test:' in log, log
 +        assert 'saves=disabled' in log and 'saves=0' in log and 'Saved frame' not in log, log
 +        assert save_dir.read_text() == 'not a directory'
 +        save_dir.unlink(); parked.rename(save_dir)
@@ -1335,6 +1347,7 @@ index 0000000..268497d
 +    run([exe, '--exit-after', '600', '--uncapped'], 'boot', env=env)
 +    assert auto.stat().st_size > 100
 +    log = (data / 'runtime.log').read_text()
++    assert 'Switch runner contract-test:' in log, log
 +    assert 'Saved frame 600' in log and 'interp_rom=0' in log, log
 +    first_state = auto.read_bytes()
 +    run([exe, '--exit-after', '600', '--uncapped'], 'resume', env=env)

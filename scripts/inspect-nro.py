@@ -6,6 +6,7 @@ import struct
 
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('path', type=Path)
+ap.add_argument('--expect-version', help='Reject a stale or incorrectly versioned package')
 args = ap.parse_args()
 data = args.path.read_bytes()
 assert len(data) >= 0x80 and data[0x10:0x14] == b'NRO0', 'Missing NRO header'
@@ -20,4 +21,8 @@ assert length == 0x4000 and size + offset + length <= len(data), 'Invalid NACP'
 nacp = data[size + offset:size + offset + length]
 title = nacp[:0x200].split(b'\0')[0].decode('utf-8')
 assert title, 'Empty application title'
-print(f'{args.path}: {len(data)} bytes; NRO sections and NACP verified; title={title!r}')
+version = nacp[0x3060:0x3070].split(b'\0')[0].decode('utf-8')
+assert version, 'Empty application version'
+if args.expect_version:
+    assert version == args.expect_version, f'Expected version {args.expect_version}, received {version}'
+print(f'{args.path}: {len(data)} bytes; NRO sections and NACP verified; title={title!r}; version={version}')

@@ -12,6 +12,14 @@ The local branch `codex/switch-runner` has the original port commit
 committed locally as `d248afef21bc80631f53a44c9ebb6efcb2147dd2`, exported
 with the patches below.
 
+The subsequent platform fix `8eeb9523344254d66a5ed5ff88661d9d9736bf3b`
+makes the runtime banner use the same version as the NACP. Its original-fixture
+host test checks that a caller-supplied version reaches the startup log. Per-game
+`VERSION` files, automatic patch increments, build manifests and SD deployment
+remain workspace policy, outside the engine. `mise run copy` exercised this
+workflow and deployed/verified version `0.2.1`; six synthetic unit tests cover
+incrementing, invalid versions, stale manifests and build/copy/mount failures.
+
 - **Generic profiles and static build extensions:** `runner/cyc/profile.cmake`,
   `cyc_profile.h`, additive arguments on `nesrecomp_add_cycle_game`, standalone
   cache options, an early startup contract check, original-fixture tests and

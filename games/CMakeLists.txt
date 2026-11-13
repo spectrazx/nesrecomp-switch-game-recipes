@@ -64,6 +64,7 @@ if(NOT NINTENDO_SWITCH AND GAME_VARIANT STREQUAL "optimized")
     set_property(TARGET nes_game PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 if(NINTENDO_SWITCH)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-artifact.txt" "${GAME_ARTIFACT}.nro\n")
     add_custom_target(package_game ALL
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${GAME_OUTPUT_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/nes_game.nro"

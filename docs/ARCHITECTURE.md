@@ -60,7 +60,7 @@ the title module.
 
 ## Adding a title
 
-1. Add `games/<id>/game.cmake` and `game.toml`. Declare title, artifact name,
+1. Add `games/<id>/game.cmake`, `game.toml` and a `VERSION` file. Declare title, artifact name,
    payload CRC, mapper, seeds, hardware profile, baseline/optimized PPU choices
    and any explicit static modules. Use `generic` unless a checked contract fits.
 2. Add an input route and title tests. Keep ROMs and generated code under ignored

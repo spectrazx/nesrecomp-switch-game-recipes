@@ -38,23 +38,31 @@ The refactor adds no new execution shortcuts; full console speed is still pendin
 With the SD mounted at `/Volumes/Untitled`, run from this repository root:
 
 ```sh
-(
-  set -e
-  diskutil info /Volumes/Untitled > /dev/null
-  sd_game="/Volumes/Untitled/switch/nesrecomp/smb1"
-  mkdir -p "$sd_game"
-  COPYFILE_DISABLE=1 cp -X build/games/smb1/SuperMarioBrosRecomp.nro "$sd_game/SuperMarioBrosRecomp.nro"
-  COPYFILE_DISABLE=1 cp -X SMB.nes "$sd_game/rom.nes"
-  cmp build/games/smb1/SuperMarioBrosRecomp.nro "$sd_game/SuperMarioBrosRecomp.nro"
-  cmp SMB.nes "$sd_game/rom.nes"
-  sync
-)
+mise run copy
 ```
 
-The commands copy the executable and your local ROM, then verify both copies.
-`cp -X` skips macOS extended attributes and metadata sidecar creation. Existing
-`saves/` files are preserved and ignored by the 0.2 build. `runtime.log` is
-replaced when the game launches and now includes timing reports every five seconds.
+The task increments the patch version from [games/smb1/VERSION](games/smb1/VERSION)
+(`0.2.1` → `0.2.2` → …), rebuilds, checks the version embedded in the NRO,
+and copies the executable, ROM and `build.json` to the SD. It stages and verifies
+the copies before replacing files, then syncs writes. The version file advances
+only after successful deployment; a failed build or copy leaves the counter
+unchanged. Commit this file with the progress it identifies.
+
+The homebrew menu and `runtime.log` use the new version. The executable keeps
+the name `SuperMarioBrosRecomp.nro` so each deployment replaces the same entry.
+The JSON records the version and executable/ROM SHA-256 hashes; it contains no
+ROM content. Saves remain disabled. Existing `saves/` files are preserved.
+
+`mise run build` builds the current version without incrementing or copying.
+Both tasks default to `SMB.nes`; set `NESRECOMP_SMB_ROM` to use another path.
+Set `NESRECOMP_SD_ROOT` if the SD mounts somewhere other than `/Volumes/Untitled`.
+The copy task checks that this is a mounted volume before building and copying.
+
+For direct use, run `python3 scripts/deploy-game.py smb1 --rom SMB.nes`.
+`scripts/build-game.py` reads the module's version file; `--version 0.3.0`
+overrides it for a build without changing the file. To start a new minor or
+major release, edit `VERSION` deliberately before building. Versions must be
+`MAJOR.MINOR.PATCH` and fit the Switch's 15-byte display field.
 
 Eject the SD through Finder when finished, or run `diskutil eject /Volumes/Untitled`.
 On the Switch, launch **Super Mario Bros. Recomp** through the homebrew menu.

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Build one game module using a native host compiler and a Switch SDK."""
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+from game_version import validate
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = 'devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282'
@@ -21,6 +25,7 @@ def main():
     ap.add_argument('--variant', choices=['baseline', 'optimized'], default='baseline', help='Native reference variant')
     ap.add_argument('--ppu', choices=['LLE', 'HLE'], help='Explicit Switch PPU override for comparisons')
     ap.add_argument('--output-dir', type=Path, help='Override packaged NRO directory')
+    ap.add_argument('--version', help='Override games/<game>/VERSION for this build')
     args = ap.parse_args()
     if not args.game or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in args.game):
         ap.error('Invalid game module name')
@@ -29,6 +34,12 @@ def main():
     rom = args.rom.expanduser().resolve()
     if not rom.is_file():
         ap.error('ROM must be an existing file')
+    try:
+        version = validate(args.version if args.version is not None else
+                           (ROOT / 'games' / args.game / 'VERSION').read_text())
+    except (OSError, ValueError) as error:
+        ap.error(str(error))
+    print(f'Building {args.game} version {version}', flush=True)
     run('bash', 'scripts/prepare-sources.sh')
     engine = ROOT / '.local/src/nesrecomp'
     build = ROOT / 'build/games' / args.game
@@ -43,6 +54,7 @@ def main():
                 '-DCMAKE_BUILD_TYPE=Release', f'-DGAME_ID={args.game}', f'-DGAME_VARIANT={variant}',
                 f'-DNESRECOMP_ROOT={engine}', f'-DNESRECOMP_ROM={rom_path}',
                 f'-DNESRECOMP_HOST_COMPILER={compiler_path}', f'-DGAME_OUTPUT_DIR={output}',
+                f'-DNESRECOMP_GAME_VERSION={version}',
                 '-DGAME_PPU_OVERRIDE=']
 
     run(*configure(host, compiler, rom, args.variant))
@@ -57,7 +69,7 @@ def main():
     devkita64 = Path(os.environ.get('DEVKITA64', str(sdk / 'devkitA64'))).expanduser().resolve()
     native = (devkita64 / 'bin/aarch64-none-elf-gcc').is_file()
     backend = ('native' if native else 'docker') if args.backend == 'auto' else args.backend
-    extras = ['-DNESRECOMP_SWITCH_SAVES=OFF', '-DNESRECOMP_SWITCH_LTO=ON', '-DNESRECOMP_SWITCH_VERSION=0.2.0',
+    extras = ['-DNESRECOMP_SWITCH_SAVES=OFF', '-DNESRECOMP_SWITCH_LTO=ON', f'-DNESRECOMP_SWITCH_VERSION={version}',
               f'-DGAME_PPU_OVERRIDE={args.ppu or ""}']
     binary = build / ('switch' if backend == 'native' else 'switch-docker')
     if backend == 'native':
@@ -80,7 +92,19 @@ def main():
         run(*prefix, *configure(binary, linux_compiler, '/private/game.nes', 'optimized'),
             '-DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake', *extras)
         run(*prefix, 'cmake', '--build', binary, '--parallel', '4')
-    print(f'Packaged game artifacts: {output}')
+    artifact_name = (binary / 'game-artifact.txt').read_text().strip()
+    if Path(artifact_name).name != artifact_name or not artifact_name.endswith('.nro'):
+        raise ValueError('Invalid artifact name from CMake')
+    artifact = output / artifact_name
+    run(sys.executable, ROOT / 'scripts/inspect-nro.py', artifact, '--expect-version', version)
+    manifest = dict(game=args.game, version=version, artifact=artifact_name,
+                    sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    rom_sha256=hashlib.sha256(rom.read_bytes()).hexdigest())
+    manifest_path = output / 'build.json'
+    pending = manifest_path.with_suffix('.json.tmp')
+    pending.write_text(json.dumps(manifest, indent=2) + '\n')
+    pending.replace(manifest_path)
+    print(f'Packaged {args.game} {version}: {artifact}', flush=True)
 
 if __name__ == '__main__':
     try:
