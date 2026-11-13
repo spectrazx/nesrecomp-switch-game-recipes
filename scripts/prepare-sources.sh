@@ -16,7 +16,7 @@ prepare() {
     exit 1
   fi
 }
-prepare nesrecomp ab3579725ae129b0e04fa2095d7e7dd38ac096b7 20d35364da66dc9eaeb2252e45c25c1ce7df32d5
+prepare nesrecomp ab3579725ae129b0e04fa2095d7e7dd38ac096b7 ccc34150f58f4e75f24cee03eb49fa187b27b29e
 prepare SuperMarioBrosNESRecomp de443b01e2707c768be1729970f99d2f9da6bec3
 patch="$PWD/patches/nesrecomp-switch.patch"
 if git -C .local/src/nesrecomp apply --reverse --check "$patch" 2>/dev/null; then

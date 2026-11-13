@@ -1,0 +1,143 @@
+diff --git a/docs/PAL_CLOCK.md b/docs/PAL_CLOCK.md
+new file mode 100644
+index 0000000..6efdf17
+--- /dev/null
++++ b/docs/PAL_CLOCK.md
+@@ -0,0 +1,29 @@
++# PAL master-clock dispatch
++
++The ordinary PAL CPU-cycle tail is specialized for the five possible PPU
++divider phases in `hw_machine.c`. The previous executor visited every master
++tick through a variable loop. Constant phase/tick arguments now let the compiler
++remove dispatch for ticks without a device edge. Every PPU dot/half-dot,
++NMI/IRQ sample and late mapper clock retains its order and `hw.tick` value.
++
++Only tails beginning at tick 1 use this path. Register accesses that already
++advanced part of a cycle keep the universal tick executor. The phase still
++advances once per CPU cycle. PAL's CPU/PPU ratio, frame length, DMA rules, guest
++cycles, save layout and NTSC path are unchanged. PAL native interval batching
++remains disabled; this does not reuse the NTSC batching assumptions.
++
++`NESRECOMP_PAL_CLOCK_REFERENCE=1` compiles the original universal tail loop
++for differential tests. CTest `cyc_pal_clock` builds that reference and the
++candidate with identical PPU/APU implementations, then applies the existing
++original `tests/ppu_span_probe.c` stimulus. It checks four NTSC and five PAL
++alignments, delayed register traffic, DMA, Zapper input, complete machine
++checkpoints, snapshot replay, pixels and PCM. `cyc_region_test` independently
++checks documented PAL clocks, frame lengths, audio and state contracts.
++
++A supplied European CNROM game's 1,800-frame native execution matches the
++pre-change program trace, raw frames, PCM and PNG. Both PPU variants retain
++native/interpreter parity and save continuation. Mac process-CPU measurements
++with audio enabled, warmup, A/A controls and balanced ABBA order measured
++22.82% and 25.02% reductions (median 23.92%), versus about 0.5% A/A variation.
++These are desktop results; they are not a Switch FPS claim. Physical-console
++qualification of the new scheduler remains pending.
+diff --git a/runner/cyc/CMakeLists.txt b/runner/cyc/CMakeLists.txt
+index 846822e..616f46c 100644
+--- a/runner/cyc/CMakeLists.txt
++++ b/runner/cyc/CMakeLists.txt
+@@ -552,6 +552,29 @@ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
+     --candidate $<TARGET_FILE:cyc_ppu_span_candidate>)
+ set_tests_properties(cyc_ppu_spans PROPERTIES TIMEOUT 180)
+ 
++# Compare the phase-specialized PAL scheduler against its universal tick loop,
++# with the SAME PPU/APU implementation on both sides. The stimulus includes
++# all PAL divider phases, split register cycles, DMA, IRQ/NMI and state replay.
++add_library(cyc_pal_clock_runtime OBJECT cpu6502.c cpu6502_interp.c
++    ${CYC_TEST_BOARD_SOURCES} hw_palette.c cyc_trace.c cyc_ring.c
++    ${NESRECOMP_CYC_SCHEDULER_SOURCES} cyc_native_none.c)
++target_include_directories(cyc_pal_clock_runtime PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
++foreach(kind candidate reference)
++    add_executable(cyc_pal_clock_${kind} tests/ppu_span_probe.c hw_machine.c hw_ppu.c hw_apu.c
++        $<TARGET_OBJECTS:cyc_pal_clock_runtime>)
++    target_include_directories(cyc_pal_clock_${kind} PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
++    target_link_libraries(cyc_pal_clock_${kind} PRIVATE ${NESRECOMP_CYC_LIBRARIES})
++    if(MSVC)
++        target_compile_definitions(cyc_pal_clock_${kind} PRIVATE _CRT_SECURE_NO_WARNINGS)
++    endif()
++endforeach()
++target_compile_definitions(cyc_pal_clock_reference PRIVATE NESRECOMP_PAL_CLOCK_REFERENCE=1)
++add_test(NAME cyc_pal_clock COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_ppu_spans.py
++    --reference $<TARGET_FILE:cyc_pal_clock_reference>
++    --candidate $<TARGET_FILE:cyc_pal_clock_candidate>)
++set_tests_properties(cyc_pal_clock PROPERTIES TIMEOUT 180)
++
+ add_executable(cyc_native_interval_probe tests/native_interval_probe.c hw_ppu.c hw_apu.c
+     $<TARGET_OBJECTS:cyc_ppu_span_runtime>)
+ target_include_directories(cyc_native_interval_probe PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
+diff --git a/runner/cyc/hw_machine.c b/runner/cyc/hw_machine.c
+index 58a8788..0fea506 100644
+--- a/runner/cyc/hw_machine.c
++++ b/runner/cyc/hw_machine.c
+@@ -128,20 +128,56 @@ static inline void pal_ppu_edge(unsigned half_phase)
+     else if (half_phase == 5) ppu_half_dot();
+ }
+ 
+-static inline void run_pal_tick(unsigned k)
++HW_ALWAYS_INLINE void run_pal_tick_at(unsigned k, unsigned phase)
+ {
+     if (k == 0 && hw_cart.watch_cpu) hw_cart_cpu_clock();
+     /* 2A07 M2 is low for 6.5 clocks (2A03: 4.5); the CPU's sample
+      * positions move two master clocks later relative to M2's falling edge. */
+     if (k == 6) sample_nmi();
+     else if (k == 9) apu_sample_irq();
+-    unsigned q = (2u * (hw_region_timing.phase + k)) % 10u;
++    unsigned q = (2u * (phase + k)) % 10u;
+     pal_ppu_edge(q);
+     if (k == 0) clock_cpu_devices();
+     pal_ppu_edge(q + 1);
+     if (k == 15 && hw_cart.clock_late) hw_cart_cpu_clock_late();
+ }
+ 
++static inline void run_pal_tick(unsigned k)
++{
++    run_pal_tick_at(k, hw_region_timing.phase);
++}
++
++#ifndef NESRECOMP_PAL_CLOCK_REFERENCE
++#define NESRECOMP_PAL_CLOCK_REFERENCE 0
++#endif
++#if !NESRECOMP_PAL_CLOCK_REFERENCE
++/* The ordinary PAL tail always starts at tick 1. Select one divider phase,
++ * then let constant propagation remove master ticks without a device edge.
++ * Every observable PPU/NMI/IRQ/mapper event keeps its original order and the
++ * same hw.tick value. Register-split cycles still use the universal executor.
++ * This is host dispatch removal, not native guest-cycle batching. */
++static void run_pal_ticks_1_to_15(void)
++{
++#define PAL_STEP(k, phase) do { hw.tick = (k) + 1; run_pal_tick_at(k, phase); } while (0)
++#define PAL_TAIL(phase) do { \
++    PAL_STEP(1, phase); PAL_STEP(2, phase); PAL_STEP(3, phase); \
++    PAL_STEP(4, phase); PAL_STEP(5, phase); PAL_STEP(6, phase); \
++    PAL_STEP(7, phase); PAL_STEP(8, phase); PAL_STEP(9, phase); \
++    PAL_STEP(10, phase); PAL_STEP(11, phase); PAL_STEP(12, phase); \
++    PAL_STEP(13, phase); PAL_STEP(14, phase); PAL_STEP(15, phase); \
++} while (0)
++    switch (hw_region_timing.phase) {
++    case 0: PAL_TAIL(0); break;
++    case 1: PAL_TAIL(1); break;
++    case 2: PAL_TAIL(2); break;
++    case 3: PAL_TAIL(3); break;
++    default: PAL_TAIL(4); break;
++    }
++#undef PAL_TAIL
++#undef PAL_STEP
++}
++#endif
++
+ void hw_clock_run_ticks(int n)
+ {
+     if (hw_isolated) return;
+@@ -384,6 +420,10 @@ void hw_cycle_start(uint16_t addr, HwCycleKind kind)
+     }
+     for (;;) {
+         if (hw_pal()) {
++#if !NESRECOMP_PAL_CLOCK_REFERENCE
++            if (hw.tick == 1) run_pal_ticks_1_to_15();
++            else
++#endif
+             while (hw.tick < 16) run_pal_tick(hw.tick++);
+             hw_region_timing.phase = (uint8_t)((hw_region_timing.phase + 1) % 5);
+         } else if (hw.tick == 1) run_ticks_1_to_11();

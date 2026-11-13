@@ -1,5 +1,17 @@
 # Notes for future NESRecomp contributions
 
+The PAL scheduler follow-up (`ccc34150f58f4e75f24cee03eb49fa187b27b29e`)
+is isolated in `patches/nesrecomp-pal-clock.patch`,
+against `20d35364da66dc9eaeb2252e45c25c1ce7df32d5`. It removes ordinary
+master-tick dispatch using five constant divider-phase schedules, retaining
+all device events and the original loop for partial cycles/reference builds.
+It introduces no title-specific optimization or NTSC batching on PAL.
+`cyc_pal_clock` compares both schedulers under identical PPU/APU implementations
+at all nine NTSC/PAL alignments; region contracts and complete game outputs
+also match. [Hardware and balanced desktop measurements](HARDWARE_0.2.3.md)
+record the evidence and the pending console speed check. This is a separate
+performance contribution from the earlier hardware-profile and profiler APIs.
+
 No PR has been opened. Keep contributions local until console behavior and
 performance are satisfactory, then review and rebase against upstream.
 

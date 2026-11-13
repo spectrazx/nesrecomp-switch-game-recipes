@@ -58,4 +58,8 @@ The 892 seed addresses were recorded from the title and gameplay routes with
 code retains interpreter fallback. Coverage is not a full-game or speed guarantee.
 The local TriCNES adapter is NTSC-only, so no independent PAL oracle result is
 claimed. Results are under `build/games/adventure-island/test-summary.json`.
-Physical-console playability, speed and music still need the user's test.
+The first physical log records 2,006 frames over 106.924 seconds: **18.76 FPS**,
+normal exit and zero saves/dropped audio chunks. It is well below the PAL
+target; picture, sound and controls require the user's qualitative feedback.
+The [hardware findings and shared PAL scheduler work](../../docs/HARDWARE_0.2.3.md)
+record the next optimization and its correctness/desktop measurement evidence.

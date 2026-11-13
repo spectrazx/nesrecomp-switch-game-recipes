@@ -1,5 +1,12 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+Newest hardware evidence: [Mario 0.2.3 and Adventure Island 0.1.1](HARDWARE_0.2.3.md).
+Both logs show normal exit with no saves or dropped audio chunks. Mario averaged
+46.44 FPS; Adventure Island averaged 18.76 FPS. A shared PAL clock-dispatch
+optimization passes timing/pixel/audio/state comparisons and measures 23.92%
+less desktop CPU time. Adventure Island **0.1.2** is the next console test;
+Mario **0.2.4** returns to profiling OFF. New hardware speed is not yet measured.
+
 Latest local follow-up: [0.2.1 hardware evidence and diagnostic profiling](PROFILING_0.2.2.md).
 Mario **0.2.3** (sampled core profiling) and [Adventure Island **0.1.1**](../games/adventure-island/README.md)
 (European PAL, profiling OFF) are built and deployed to separate SD folders.
@@ -29,8 +36,9 @@ Implemented in the local NESRecomp checkout at
 reproducible contribution is [patches/nesrecomp-switch.patch](../patches/nesrecomp-switch.patch),
 including its upstream `docs/SWITCH.md`. The Mario checkout is unchanged.
 The NESRecomp contribution is committed locally as
-`20d35364da66dc9eaeb2252e45c25c1ce7df32d5` (`codex/switch-runner`), following
-the version banner `8eeb9523344254d66a5ed5ff88661d9d9736bf3b`,
+`ccc34150f58f4e75f24cee03eb49fa187b27b29e` (`codex/switch-runner`), following
+the core profiler `20d35364da66dc9eaeb2252e45c25c1ce7df32d5`,
+version banner `8eeb9523344254d66a5ed5ff88661d9d9736bf3b`,
 architecture `d248afef21bc80631f53a44c9ebb6efcb2147dd2`,
 0.2 `a4e9f74109067dc5105c1059322efc264d436b75` and original
 `4eed78d9d6abf60c651942bc3e60f1762370133d` commits.
