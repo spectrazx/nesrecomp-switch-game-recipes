@@ -1,0 +1,872 @@
+diff --git a/.gitignore b/.gitignore
+index 0015ada..b833cd2 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -21,6 +21,9 @@ Testing/
+ 
+ # ROM files — never commit game ROMs
+ *.nes
++*.nro
++*.nacp
++*.elf
+ *.bin
+ *.sav
+ 
+diff --git a/docs/SWITCH.md b/docs/SWITCH.md
+new file mode 100644
+index 0000000..1870b94
+--- /dev/null
++++ b/docs/SWITCH.md
+@@ -0,0 +1,204 @@
++# Nintendo Switch 1 cycle runner (experimental)
++
++An opt-in libnx/SDL2 host for one compiled cartridge per `.nro`. It reuses the
++cycle CPU/PPU/APU/mappers, scheduler, ROM checks, session lifecycle, state
++serialization and battery saves. Desktop source selection remains unchanged.
++This is a build-tested prototype; real-console playability is unverified.
++
++## Scope
++
++The first target is vanilla Super Mario Bros., mapper 0. Use the standalone
++`runner/cyc/project`, not the enhanced Mario CMake target. The Switch build
++rejects `HEADLESS`, `MODS`, `HD_PACKS`, `HOST_EXTRAS` and explicit `BIOS` inputs.
++It disables recomp-ui and diagnostic replay recording and does not build the
++desktop TCP/chat/settings frontend. Generic dependency-free mod registries
++remain linked as part of the shared core, with no mod catalog or gameplay mods.
++FDS, light guns, multiple players and enhanced game hosts are outside this
++initial frontend's supported scope.
++
++Recompilation coverage is not a performance guarantee. Uncovered instructions
++can use the existing interpreter fallback. Measure native/interpreted cycles,
++frame times and audio behavior on hardware at stock clocks before claiming
++full-speed play. The default PPU remains LLE; no optimization or timing
++enhancement is silently enabled.
++
++## Verified tools
++
++- Host: Apple Silicon macOS 26.5.1, Apple Clang 17.0.0, CMake 4.5.0,
++  Ninja 1.13.2, Python 3.14.3 for the recorded test commands.
++- Host SDL: Homebrew sdl2-compat 2.32.74 (SDL2 CMake API).
++- Cross SDK: official ARM64 Linux devkitPro Docker image,
++  `devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282`.
++- Cross packages: devkitA64 r29.2-1 (GCC 15.2.0), libnx 4.12.0-1,
++  switch-tools 1.13.1-1, switch-cmake 1.5.2-1, switch-sdl2 2.28.5-4.
++
++These are tested versions, not established minimum versions. Native macOS
++devkitPro installation was unavailable during this validation. Its package
++manager requires administrator installation; follow the official
++[devkitPro pacman instructions](https://github.com/devkitPro/pacman/releases).
++Install `switch-dev` and `switch-sdl2`. Check the installed compiler with `file`
++and `--version` rather than assuming Rosetta is necessary.
++
++## Native Mac generation and cross-compilation
++
++Run from the NESRecomp root. Keep all private ROMs/generated code in ignored
++locations. The example expects an existing Mario checkout in `$SMB_REPO` and
++your matching original ROM at the absolute `$NESRECOMP_SMB_ROM` path.
++
++```sh
++cmake -S recompiler -B build/recompiler -G Ninja -DCMAKE_BUILD_TYPE=Release
++cmake --build build/recompiler --parallel 4
++build/recompiler/NESRecomp --help
++python3 "$SMB_REPO/tools/verify_usa_rom.py" --rom "$NESRECOMP_SMB_ROM" \
++  --crc D445F698 --mapper 0 --title 'Super Mario Bros.'
++mkdir -p build/smb1
++cat > build/smb1/vanilla.toml <<'EOF'
++[game]
++output_prefix = "smb1-vanilla"
++cycle_accurate = true
++EOF
++cmake -S runner/cyc/project -B build/smb1/host -G Ninja \
++  -DCMAKE_BUILD_TYPE=Release -DNESRECOMP_HEADLESS=ON -DNESRECOMP_RECOMP_UI=OFF \
++  -DNESRECOMP_ROM="$NESRECOMP_SMB_ROM" \
++  -DNESRECOMP_GAME_CONFIG="$PWD/build/smb1/vanilla.toml" \
++  -DNESRECOMP_CYCLE_SEEDS="$SMB_REPO/cyc_seeds.txt" \
++  -DNESRECOMP_HOST_COMPILER="$PWD/build/recompiler/NESRecomp"
++cmake --build build/smb1/host --parallel 4
++build/smb1/host/nes_game "$NESRECOMP_SMB_ROM" --frames 600 \
++  --screenshot "$PWD/build/smb1/boot.png"
++```
++
++With a native macOS SDK installed:
++
++```sh
++export DEVKITPRO=/opt/devkitpro
++export DEVKITA64="$DEVKITPRO/devkitA64"
++export PATH="$DEVKITA64/bin:$DEVKITPRO/tools/bin:$DEVKITPRO/portlibs/switch/bin:$PATH"
++cmake -S runner/cyc/project -B build/smb1/switch -G Ninja \
++  -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
++  -DCMAKE_BUILD_TYPE=Release -DNESRECOMP_RECOMP_UI=OFF \
++  -DNESRECOMP_HOST_COMPILER="$PWD/build/recompiler/NESRecomp" \
++  -DNESRECOMP_ROM="$NESRECOMP_SMB_ROM" \
++  -DNESRECOMP_GAME_CONFIG="$PWD/build/smb1/vanilla.toml" \
++  -DNESRECOMP_CYCLE_SEEDS="$SMB_REPO/cyc_seeds.txt" \
++  -DNESRECOMP_SWITCH_GAME_DIR=sdmc:/switch/nesrecomp/smb1 \
++  '-DNESRECOMP_SWITCH_TITLE=Super Mario Bros. Recomp'
++cmake --build build/smb1/switch --parallel 4
++# build/smb1/switch/nes_game.nro and nes_game.nacp
++```
++
++The user-supplied Mario ROM (audited CRC D445F698, mapper 0) now passes native
++generation, a 600-frame title boot and a separate 1800-frame input route into
++World 1-1. Native/interpreter per-frame hashes match; reloading a state saved
++after zero-based frame 600 reproduces all remaining 1199 frame hashes and the
++final screenshot. A Mario NRO was produced with the Docker SDK; its NRO/NACP
++headers were checked. All nine generated C units match between Mac and Linux
++host compilers. No mods, HD packs, recomp-ui or netplay were enabled.
++The code generator executable must be runnable by the build host. A Linux
++container cannot execute the Mac's Mach-O compiler; use the prepared fixture
++below, or compile a separate Linux host compiler inside that container.
++
++The SDK's real `nx_generate_nacp` and `nx_create_nro` helpers package metadata
++and the NRO. `find_package(SDL2 CONFIG REQUIRED)` prevents headless fallback.
++Runtime game-directory and NACP title/author/version are CMake inputs, so each
++game can have separate paths and metadata without platform-source edits.
++
++## ROM-free verification and Docker cross-build (executed)
++
++```sh
++python3 tools/cyc/test_switch_host.py --out build/switch-host-contract \
++  --recompiler build/recompiler/NESRecomp
++docker run --rm -v "$PWD:$PWD" -w "$PWD" \
++  devkitpro/devkita64@sha256:1fc388c3a0d34bd2045a6dadcb1020e069d5f876a187fd705de14b4440c00282 \
++  bash -c 'cmake -S build/switch-host-contract/project -B build/switch-cross-fixture -G Ninja \
++    -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake -DCMAKE_BUILD_TYPE=Release && \
++    cmake --build build/switch-cross-fixture --parallel 4'
++```
++
++The test generates its own small NROM program and compiles it on the Mac. It
++executes the Switch SDL host with dummy video/audio drivers, verifies 100%
++native ROM coverage, and tests autosave/resume, missing/wrong ROM rejection,
++corrupt-state preservation, save-write errors and an invalid save directory.
++It also emits a cross-build harness containing the same Mac-generated C,
++shared core source list and Switch host. The Docker mount preserves absolute
++generated paths. Output: `build/switch-cross-fixture/switch_fixture.nro`.
++
++The normal `runner/cyc/project` cross-build was independently exercised using
++a Linux host compiler in the same image. Mac/Linux generated fixture sources
++matched byte for byte. NRO0 header, asset section, NACP size and title were
++checked on the resulting NRO. No Nintendo game data is used by these tests.
++
++Desktop regressions: five CTests passed (`cyc_helper_test`, `cyc_mapper_test`,
++`cyc_frame_pacing_test`, `cyc_input_test`, `cyc_window_run`); the existing
++`test_cyc_project.py` passed generation/rebuild/identity checks. Set
++`SDL2_DIR=/opt/homebrew/opt/sdl2-compat/lib/cmake/SDL2` explicitly for the
++standalone desktop test build: its top-level SDL search can otherwise select
++the bundled Windows DLL on this Mac. This existing test-build issue was not
++changed as part of the Switch patch.
++
++## SD layout and controls
++
++For the Mario recipe, place:
++
++```text
++sdmc:/switch/nesrecomp/smb1/
++  SuperMarioBrosRecomp.nro     # renamed nes_game.nro
++  rom.nes                     # your matching original ROM
++  runtime.log                 # created each launch
++  saves/
++    auto.cycstate             # automatic resume
++    slot.cycstate             # explicit quick save
++    rom.sav                   # battery RAM, only if the cartridge has it
++```
++
++The build-machine ROM location is never used to locate the runtime ROM. Core
++cartridge/PRG identity validation remains in the original host. The ROM is
++read-only. Directories are created recursively; invalid directories and save
++errors fail visibly rather than silently continuing. There is no persistent
++frontend config in this first host; controls and display policy are fixed.
++
++- D-pad or left stick: move; physical Nintendo A/B: NES A/B.
++- Plus/Minus: Start/Select.
++- ZL: quick save; ZR: quick load. A missing/invalid quick-load slot reports an
++  error and returns to homebrew without replacing that slot.
++- L + R + Plus: save and quit to the homebrew launcher.
++- Hold physical Nintendo X at launch: intentionally start fresh rather than
++  loading the automatic state. Exiting then replaces the automatic state.
++
++Normally the automatic state loads at launch. Checkpoints are written every
++30 seconds, on SDL background/focus-loss events, on libnx exit/focus hooks,
++and at normal exit. libnx hooks run between emulated frames. A corrupt or
++incompatible automatic state is preserved and startup stops. Back up saves
++before updating the executable; the core does not promise state portability
++between builds or platforms. Checkpoint writes cannot guarantee the last
++moment survives a power cut or forced process termination.
++
++Video uses a 256x240 texture, nearest filtering, a 4:3 displayed image and
++letterboxing. Audio is generated at 48 kHz mono and converted with an SDL
++audio stream to the obtained device format/rate/channels. The device queue
++is bounded to about 100 ms; dropped audio chunks and coverage counters are
++recorded in `runtime.log`. Guest deadlines use the core's frame duration,
++independent of display VSync.
++
++## Hardware validation still required
++
++Boot and play Mario's first level; inspect missing-ROM/save-error screens;
++verify physical buttons, controller reconnection, handheld/docked rendering,
++long-session audio and frame times, HOME/sleep/close and subsequent resume.
++No Switch was connected during implementation, so all these remain unverified.
++SDL dummy tests establish host logic, not working Switch GPU/audio devices.
++The actual Mario Switch host also ran with dummy video/audio on the Mac:
++600-frame boot, automatic resume and another 600 frames passed. A paced run
++completed 600 frames in about 9.98 seconds but dropped 14 audio chunks under
++the dummy backend; physical-device audio stability is not established.
++
++A TriCNES comparison matched CPU/bus traces, registers, cycle counts, memory
++and raw 9-bit pixel hashes on all 1800 scripted frames. Internal hardware
++hashes and the RGB palette conversion differ, so this is not full oracle
++parity. The oracle needed `-Wno-c++11-narrowing` with Apple Clang to build;
++no oracle source was changed.
++
++An NRO appears in the homebrew launcher. Individual Switch HOME-menu icons
++require a separately configured forwarder; this patch does not create one.
++Adventure Island (CNROM/mapper 3) is the intended next game after Mario is
++qualified; mapper support alone does not establish its full playability.
+diff --git a/runner/cyc/cyc.cmake b/runner/cyc/cyc.cmake
+index f32e986..4b5888b 100644
+--- a/runner/cyc/cyc.cmake
++++ b/runner/cyc/cyc.cmake
+@@ -113,6 +113,11 @@ set(NESRECOMP_CYC_HELPER_TEST_SOURCES ${NESRECOMP_CYC_DIR}/cyc_helper_test.c)
+ # host extras (cyc_host_extras.h) replace the default cyc_host_extras_none.c
+ # provides (it is in NESRECOMP_CYC_SOURCES and gives way to a definition).
+ function(nesrecomp_cyc_enable_sdl target)
++    if(NINTENDO_SWITCH)
++        include("${NESRECOMP_CYC_DIR}/../switch/switch.cmake")
++        nesrecomp_cyc_enable_switch(${target})
++        return()
++    endif()
+     cmake_parse_arguments(SDLOPT "DEV_UI;NO_DEV_UI" "" "" ${ARGN})
+     get_filename_component(_nes_sdl_vc "${NESRECOMP_CYC_DIR}/../external/SDL2/cmake" REALPATH)
+     if(WIN32)
+diff --git a/runner/cyc/cyc_fds_save.inc b/runner/cyc/cyc_fds_save.inc
+index c2b1d97..4537424 100644
+--- a/runner/cyc/cyc_fds_save.inc
++++ b/runner/cyc/cyc_fds_save.inc
+@@ -73,7 +73,9 @@ static uint8_t *fds_read_whole(const char *path, size_t *size, bool *missing)
+ static bool default_save_path(const char *image_path, const char *extension, char *out, size_t cap)
+ {
+     char dir[900] = ".";
+-#ifdef _WIN32
++#ifdef CYC_SWITCH
++    snprintf(dir, sizeof(dir), "%s/", CYC_SWITCH_GAME_DIR);
++#elif defined(_WIN32)
+     DWORD n = GetModuleFileNameA(NULL, dir, sizeof(dir));
+     if (n == 0 || n >= sizeof(dir)) strcpy(dir, ".");
+ #else
+diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
+index 691dfc1..0041229 100644
+--- a/runner/cyc/cyc_host.c
++++ b/runner/cyc/cyc_host.c
+@@ -1990,12 +1990,20 @@ session_restart:
+ #ifndef CYC_ORACLE
+ int main(int argc, char **argv)
+ {
++#ifdef CYC_SWITCH
++    int cyc_switch_init(void);
++    void cyc_switch_shutdown(void);
++    if (!cyc_switch_init()) return 2;
++#endif
+ #ifdef CYC_STARTUP_DIAGNOSTICS
+     /* Capture even failures in argument parsing, settings or launcher setup. */
+     cyc_diagnostics_startup();
+ #endif
+     int result = host_main(argc, argv);
+     cyc_diagnostics_exit(result);
++#ifdef CYC_SWITCH
++    cyc_switch_shutdown();
++#endif
+     return result;
+ }
+ #endif
+diff --git a/runner/cyc/cyc_replay.c b/runner/cyc/cyc_replay.c
+index eb91963..125478f 100644
+--- a/runner/cyc/cyc_replay.c
++++ b/runner/cyc/cyc_replay.c
+@@ -51,7 +51,7 @@ void cyc_replay_mods_applied(void)
+ #endif
+ }
+ 
+-#ifndef CYC_WITH_SDL
++#if !defined(CYC_WITH_SDL) || defined(CYC_SWITCH)
+ 
+ void cyc_replay_set_config_path(const char *path) { (void)path; }
+ bool cyc_replay_init(const char *title) { (void)title; return false; }
+diff --git a/runner/cyc/cyc_state.c b/runner/cyc/cyc_state.c
+index 0565f28..fbd8f65 100644
+--- a/runner/cyc/cyc_state.c
++++ b/runner/cyc/cyc_state.c
+@@ -425,7 +425,10 @@ bool cyc_state_save_file(const char *path, char *err, size_t err_len)
+     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+     FILE *f = fopen(tmp, "wb");
+     bool ok = f && fwrite(data, 1, len, f) == len;
+-    if (f) ok = fflush(f) == 0 && ok, fclose(f);
++    if (f) {
++        if (fflush(f) != 0) ok = false;
++        if (fclose(f) != 0) ok = false;
++    }
+     free(data);
+     if (ok) {
+ #ifdef _WIN32
+diff --git a/runner/cyc/project.cmake b/runner/cyc/project.cmake
+index 22f0ae6..f23abe7 100644
+--- a/runner/cyc/project.cmake
++++ b/runner/cyc/project.cmake
+@@ -12,6 +12,12 @@ include("${CMAKE_CURRENT_LIST_DIR}/../recomp_net.cmake")
+ # builds without it. recomp_ui.cmake has to be included here, at file scope:
+ # it enables C++ for the directory.
+ set(NESRECOMP_RECOMP_UI "" CACHE STRING "recomp-ui checkout for the cycle host's launcher and menu (empty: <source>/recomp-ui if usable; OFF: none)")
++if(NINTENDO_SWITCH)
++    if(NESRECOMP_RECOMP_UI AND NOT NESRECOMP_RECOMP_UI STREQUAL "OFF")
++        message(FATAL_ERROR "Switch cycle games do not support recomp-ui")
++    endif()
++    set(NESRECOMP_RECOMP_UI OFF)
++endif()
+ set(NESRECOMP_CYC_RECOMP_UI_ROOT "")
+ function(_nesrecomp_recomp_ui_usable dir out why)
+     set(${out} FALSE PARENT_SCOPE)
+@@ -57,6 +63,9 @@ function(nesrecomp_add_cycle_game target)
+     if(CYC_UNPARSED_ARGUMENTS OR NOT CYC_ROM)
+         message(FATAL_ERROR "nesrecomp_add_cycle_game requires ROM; unknown arguments: ${CYC_UNPARSED_ARGUMENTS}")
+     endif()
++    if(NINTENDO_SWITCH AND (CYC_HEADLESS OR CYC_MODS OR CYC_HD_PACKS OR CYC_HOST_EXTRAS OR CYC_BIOS))
++        message(FATAL_ERROR "Switch cycle games require SDL and a vanilla cartridge target (no HEADLESS, MODS, HD_PACKS, HOST_EXTRAS or BIOS)")
++    endif()
+     set(cyc_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+     get_filename_component(root "${cyc_dir}/../.." ABSOLUTE)
+     find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+diff --git a/runner/switch/diagnostics.c b/runner/switch/diagnostics.c
+new file mode 100644
+index 0000000..514c9ae
+--- /dev/null
++++ b/runner/switch/diagnostics.c
+@@ -0,0 +1,21 @@
++/* Switch has no /proc, desktop crash reporter or process-launching service. */
++#include "cyc_diagnostics.h"
++#include <stdarg.h>
++#include <stdio.h>
++void cyc_diagnostics_sync(void) {}
++void cyc_diagnostics_startup(void) {}
++const void *cyc_diagnostics_provider(const void *provider) { return provider; }
++bool cyc_diagnostics_enable(void) { return false; }
++void cyc_diagnostics_disable(void) {}
++bool cyc_diagnostics_active(void) { return false; }
++void cyc_diagnostics_note(const char *format, ...) {
++    va_list ap; va_start(ap, format); vfprintf(stderr, format, ap);
++    va_end(ap); fputc('\n', stderr);
++}
++void cyc_diagnostics_error(const char *format, ...) {
++    va_list ap; va_start(ap, format); vfprintf(stderr, format, ap); va_end(ap);
++}
++void cyc_diagnostics_frame(uint64_t frame, uint64_t cycles, unsigned pc) {
++    (void)frame; (void)cycles; (void)pc;
++}
++void cyc_diagnostics_exit(int code) { fprintf(stderr, "exit=%d\n", code); }
+diff --git a/runner/switch/host.c b/runner/switch/host.c
+new file mode 100644
+index 0000000..338719e
+--- /dev/null
++++ b/runner/switch/host.c
+@@ -0,0 +1,333 @@
++/* Vanilla cartridge host. The shared cyc_host.c still owns ROM validation,
++ * power-on, session setup, battery storage and the application's only main. */
++#include <SDL.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#ifdef __SWITCH__
++#include <switch.h>
++#endif
++#include "cyc_core.h"
++#include "cyc_host.h"
++#include "cyc_ring.h"
++#include "cyc_run.h"
++#include "cyc_session.h"
++#include "cyc_state.h"
++
++#ifndef CYC_SWITCH_GAME_DIR
++#error CYC_SWITCH_GAME_DIR must name a private per-game data directory
++#endif
++#define ROM_PATH CYC_SWITCH_GAME_DIR "/rom.nes"
++#define AUTO_PATH CYC_SWITCH_GAME_DIR "/saves/auto.cycstate"
++#define SLOT_PATH CYC_SWITCH_GAME_DIR "/saves/slot.cycstate"
++
++static SDL_AudioDeviceID audio;
++static bool ready, storage_failed, suspended;
++static long exit_after = -1;
++static bool uncapped;
++static unsigned saves;
++#ifdef __SWITCH__
++static AppletHookCookie hook;
++static bool hooked;
++#endif
++
++static bool mkdirs(const char *path)
++{
++    char copy[1024];
++    if (strlen(path) >= sizeof(copy)) return false;
++    strcpy(copy, path);
++    for (char *p = copy + 1; ; ++p) {
++        if (*p != '/' && *p) continue;
++        char c = *p; *p = 0;
++        /* The mount itself is already supplied by libnx. */
++        size_t n = strlen(copy);
++        if (n && copy[n - 1] != ':') {
++            struct stat st;
++            if ((mkdir(copy, 0755) && errno != EEXIST) || stat(copy, &st) || !S_ISDIR(st.st_mode)) return false;
++        }
++        *p = c;
++        if (!c) return true;
++    }
++}
++
++bool cyc_sdl_error_box(const char *title, const char *text)
++{
++    fprintf(stderr, "%s: %s\n", title, text);
++#ifdef __SWITCH__
++    /* SDL message boxes are not implemented by every Switch SDL driver. */
++    SDL_Quit();
++    consoleInit(NULL);
++    printf("%s\n\n%s\n\nPress + to return to the homebrew menu.\n", title, text);
++    PadState pad; padConfigureInput(1, HidNpadStyleSet_NpadStandard); padInitializeDefault(&pad);
++    while (appletMainLoop()) {
++        padUpdate(&pad);
++        if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
++        consoleUpdate(NULL);
++    }
++    consoleExit(NULL);
++#endif
++    return true;
++}
++
++int cyc_switch_init(void)
++{
++    if (!mkdirs(CYC_SWITCH_GAME_DIR "/saves")) {
++        cyc_sdl_error_box("Storage unavailable", "Cannot create the game's directory on the SD card.");
++        return 0;
++    }
++    /* Fixed filenames keep paths independent of hbmenu/forwarder working dirs. */
++    if (chdir(CYC_SWITCH_GAME_DIR)) return 0;
++    if (!freopen(CYC_SWITCH_GAME_DIR "/runtime.log", "w", stderr)) return 0;
++    setvbuf(stderr, NULL, _IONBF, 0);
++    return 1;
++}
++
++void cyc_switch_shutdown(void) { fflush(stderr); }
++
++int cyc_sdl_prelaunch(const char **rom_path, const char *bios, NesFdsHleAsk *hle,
++                      const char **saved_bios)
++{
++    (void)bios;
++    *rom_path = ROM_PATH;
++    *hle = NES_FDS_HLE_ASK_NONE;
++    *saved_bios = NULL;
++    return 0;
++}
++void cyc_sdl_option(const char *name, const char *value)
++{
++    if (!strcmp(name, "--exit-after")) exit_after = strtol(value, NULL, 10);
++    if (!strcmp(name, "--uncapped")) uncapped = true;
++}
++void cyc_sdl_present_out(const char *path, long every) { (void)path; (void)every; }
++void cyc_sdl_image_path(const char *path) { (void)path; }
++
++static bool save_to(const char *path)
++{
++    if (!ready || storage_failed) return false;
++    char err[256];
++    if (!cyc_state_save_file(path, err, sizeof(err))) {
++        fprintf(stderr, "Save failed: %s\n", err);
++        storage_failed = true;
++        return false;
++    }
++    ++saves;
++    fprintf(stderr, "Saved frame %llu to %s\n", (unsigned long long)cyc_ring_frame, path);
++    return true;
++}
++
++#ifdef __SWITCH__
++/* libnx dispatches these hooks while the main thread processes applet
++ * messages. appletMainLoop/SDL_PollEvent are only called between NES frames. */
++static void applet_event(AppletHookType type, void *unused)
++{
++    (void)unused;
++    if (!ready) return;
++    if (type == AppletHookType_OnExitRequest ||
++        (type == AppletHookType_OnFocusState && appletGetFocusState() != AppletFocusState_InFocus))
++        save_to(AUTO_PATH);
++}
++#endif
++
++static bool load_from(const char *path, bool optional)
++{
++    struct stat st;
++    if (stat(path, &st)) {
++        if (optional && errno == ENOENT) return true;
++        fprintf(stderr, "Cannot access state %s: %s\n", path, strerror(errno));
++        return false;
++    }
++    char err[256];
++    if (!cyc_state_load_file(path, err, sizeof(err))) {
++        fprintf(stderr, "Cannot load state: %s\n", err);
++        return false;
++    }
++    cyc_session_state_loaded();
++    if (audio) SDL_ClearQueuedAudio(audio);
++    return true;
++}
++
++static SDL_GameController *open_pad(void)
++{
++    for (int i = 0; i < SDL_NumJoysticks(); ++i)
++        if (SDL_IsGameController(i)) {
++            SDL_GameController *pad = SDL_GameControllerOpen(i);
++            if (pad) return pad;
++        }
++    return NULL;
++}
++
++static uint8_t buttons(SDL_GameController *pad)
++{
++    if (!pad) return 0;
++    uint8_t result = 0;
++    /* SDL uses physical Xbox positions: east B = Nintendo A, south A = B. */
++    const SDL_GameControllerButton map[8] = {
++        SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_A,
++        SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_START,
++        SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN,
++        SDL_CONTROLLER_BUTTON_DPAD_LEFT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT
++    };
++    for (unsigned i = 0; i < 8; ++i)
++        if (SDL_GameControllerGetButton(pad, map[i])) result |= 0x80u >> i;
++    int x = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
++    int y = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
++    if (x < -16000) result |= 2;
++    if (x > 16000) result |= 1;
++    if (y < -16000) result |= 8;
++    if (y > 16000) result |= 4;
++    return result;
++}
++
++int cyc_sdl_main(const char *title, int scale)
++{
++    (void)scale;
++    SDL_Window *window = NULL;
++    SDL_Renderer *renderer = NULL;
++    SDL_Texture *texture = NULL;
++    SDL_AudioStream *stream = NULL;
++    SDL_GameController *pad = NULL;
++    const char *fatal = NULL;
++    int result = 2;
++    audio = 0; ready = storage_failed = suspended = false;
++    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER)) {
++        fatal = "Cannot initialize SDL video, audio and controllers."; goto cleanup;
++    }
++    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
++    window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_SHOWN);
++    if (window) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
++    if (window && !renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
++    if (!renderer) { fatal = "Cannot create the SDL video renderer."; goto cleanup; }
++    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256, 240);
++    if (!texture) { fatal = "Cannot create the NES frame texture."; goto cleanup; }
++
++    SDL_AudioSpec want = {0}, have;
++    want.freq = 48000; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;
++    audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
++    if (!audio || have.freq <= 0 || !have.channels || !SDL_AUDIO_BITSIZE(have.format)) {
++        fatal = "Cannot open the audio device."; goto cleanup;
++    }
++    stream = SDL_NewAudioStream(AUDIO_S16SYS, 1, 48000, have.format, have.channels, have.freq);
++    if (!stream || !cyc_audio_enable(48000)) { fatal = "Cannot configure NES audio conversion."; goto cleanup; }
++    fprintf(stderr, "Audio %d Hz channels=%u format=%u\n", have.freq, have.channels, have.format);
++    SDL_PauseAudioDevice(audio, 0);
++    pad = open_pad();
++    SDL_GameControllerUpdate();
++    /* Hold Nintendo X (SDL north/Y) at launch to deliberately start fresh. */
++    bool fresh = pad && SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y);
++    if (!fresh && !load_from(AUTO_PATH, true)) {
++        fatal = "Cannot read the automatic save. It has been preserved. See runtime.log."; goto cleanup;
++    }
++    ready = true;
++#ifdef __SWITCH__
++    appletHook(&hook, applet_event, NULL); hooked = true;
++    if (R_FAILED(appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleepNotify))) {
++        fatal = "Cannot configure suspend notifications."; goto cleanup;
++    }
++#endif
++    bool running = true, old_save = false, old_load = false;
++    const Uint64 frequency = SDL_GetPerformanceFrequency();
++    const double period = cyc_host_frame_seconds() * (double)frequency;
++    double next = (double)SDL_GetPerformanceCounter();
++    Uint64 started = SDL_GetPerformanceCounter(), checkpoint = started, frames = 0, dropped = 0;
++    while (running) {
++#ifdef __SWITCH__
++        if (!appletMainLoop()) break;
++#endif
++        SDL_Event event;
++        while (SDL_PollEvent(&event)) {
++            if (event.type == SDL_QUIT) running = false;
++            if (event.type == SDL_APP_WILLENTERBACKGROUND ||
++                (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)) {
++                save_to(AUTO_PATH); suspended = true;
++                SDL_ClearQueuedAudio(audio); SDL_AudioStreamClear(stream);
++                SDL_PauseAudioDevice(audio, 1);
++            }
++            if (event.type == SDL_APP_DIDENTERFOREGROUND ||
++                (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)) {
++                suspended = false; next = (double)SDL_GetPerformanceCounter();
++                SDL_PauseAudioDevice(audio, 0);
++            }
++        }
++        if (!running || storage_failed) break;
++        if (pad && !SDL_GameControllerGetAttached(pad)) { SDL_GameControllerClose(pad); pad = NULL; }
++        if (!pad) pad = open_pad();
++        if (suspended) { SDL_Delay(10); continue; }
++        bool save = pad && SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
++        bool load = pad && SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
++        if (save && !old_save) save_to(SLOT_PATH);
++        if (load && !old_load) {
++            if (!load_from(SLOT_PATH, false)) {
++                fatal = "Cannot load the quick-save slot. See runtime.log."; break;
++            }
++            SDL_AudioStreamClear(stream); next = (double)SDL_GetPerformanceCounter();
++        }
++        old_save = save; old_load = load;
++        if (pad && SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
++            SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) &&
++            SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) break;
++        uint8_t input[2] = {buttons(pad), 0};
++        cyc_session_logical_input(input, 2); cyc_session_input(input);
++        cyc_set_controller(0, input[0]); cyc_set_controller(1, 0);
++        cyc_session_frame_begin(); cyc_run_frame(); cyc_session_frame_end();
++        cyc_host_frame_done((long)cyc_ring_frame);
++        ++frames;
++        int16_t pcm[4096]; size_t count;
++        while ((count = cyc_audio_read(pcm, 4096)))
++            if (SDL_AudioStreamPut(stream, pcm, (int)(count * sizeof(*pcm)))) {
++                fatal = "Audio conversion failed."; running = false; break;
++            }
++        Uint32 limit = (Uint32)(have.freq / 10) * have.channels * (SDL_AUDIO_BITSIZE(have.format) / 8);
++        unsigned char converted[16384]; int bytes;
++        while ((bytes = SDL_AudioStreamGet(stream, converted, sizeof(converted))) > 0) {
++            if (SDL_GetQueuedAudioSize(audio) + (Uint32)bytes > limit) { ++dropped; continue; }
++            if (SDL_QueueAudio(audio, converted, (Uint32)bytes)) {
++                fatal = "Audio queue failed."; running = false; break;
++            }
++        }
++        if (bytes < 0) { fatal = "Audio conversion failed."; break; }
++        int width, height;
++        SDL_GetRendererOutputSize(renderer, &width, &height);
++        /* 4:3 displayed picture; preserve the complete 256x240 framebuffer. */
++        int h = height, w = h * 4 / 3;
++        if (w > width) { w = width; h = w * 3 / 4; }
++        SDL_Rect dest = {(width - w) / 2, (height - h) / 2, w, h};
++        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); SDL_RenderClear(renderer);
++        if (SDL_UpdateTexture(texture, NULL, cyc_frame_argb(), 256 * sizeof(uint32_t)) ||
++            SDL_RenderCopy(renderer, texture, NULL, &dest)) { fatal = "Video presentation failed."; break; }
++        SDL_RenderPresent(renderer);
++        Uint64 now = SDL_GetPerformanceCounter();
++        if (now - checkpoint >= frequency * 30) { save_to(AUTO_PATH); checkpoint = now; }
++        if (exit_after >= 0 && frames >= (Uint64)exit_after) break;
++        if (!uncapped) {
++            now = SDL_GetPerformanceCounter();
++            next += period;
++            double remaining = (next - (double)now) * 1000.0 / (double)frequency;
++            if (remaining > 1) SDL_Delay((Uint32)(remaining - 1));
++            while ((double)SDL_GetPerformanceCounter() < next) SDL_Delay(0);
++            if ((double)now - next > period * 4) next = (double)now;
++        }
++    }
++    if (!fatal && !storage_failed && !save_to(AUTO_PATH)) storage_failed = true;
++    if (storage_failed) fatal = "Could not save progress to the SD card. See runtime.log.";
++    fprintf(stderr, "frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
++        (unsigned long long)frames, (double)(SDL_GetPerformanceCounter() - started) / frequency,
++        (unsigned long long)cyc_run_native_cycles, (unsigned long long)cyc_run_interp_rom_cycles,
++        (unsigned long long)cyc_run_interp_ram_cycles, (unsigned long long)dropped, saves);
++    result = fatal ? 2 : 0;
++cleanup:
++    ready = false;
++#ifdef __SWITCH__
++    if (hooked) { appletUnhook(&hook); hooked = false; }
++#endif
++    if (fatal) fprintf(stderr, "%s SDL: %s\n", fatal, SDL_GetError());
++    if (pad) SDL_GameControllerClose(pad);
++    if (audio) SDL_CloseAudioDevice(audio);
++    audio = 0;
++    SDL_FreeAudioStream(stream);
++    SDL_DestroyTexture(texture); SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
++    if (fatal) cyc_sdl_error_box("Cannot continue", fatal);
++    return result;
++}
+diff --git a/runner/switch/switch.cmake b/runner/switch/switch.cmake
+new file mode 100644
+index 0000000..7c255d4
+--- /dev/null
++++ b/runner/switch/switch.cmake
+@@ -0,0 +1,35 @@
++# Switch packaging and the small vanilla SDL host. Hardware sources remain in cyc.cmake.
++include_guard(GLOBAL)
++if(NOT DEFINED NESRECOMP_SWITCH_GAME_DIR)
++    set(NESRECOMP_SWITCH_GAME_DIR "" CACHE STRING "Runtime SD directory, e.g. sdmc:/switch/nesrecomp/smb1")
++endif()
++if(NOT DEFINED NESRECOMP_SWITCH_TITLE)
++    set(NESRECOMP_SWITCH_TITLE "NESRecomp" CACHE STRING "HOME/homebrew application name")
++endif()
++set(NESRECOMP_SWITCH_AUTHOR "NESRecomp contributors" CACHE STRING "NACP author")
++set(NESRECOMP_SWITCH_VERSION "0.1.0" CACHE STRING "NACP version")
++
++function(nesrecomp_cyc_enable_switch target)
++    if(NOT NESRECOMP_SWITCH_GAME_DIR MATCHES "^sdmc:/[A-Za-z0-9_/-]+$" OR
++       NESRECOMP_SWITCH_GAME_DIR MATCHES "(^|/)\\.\\.(/|$)")
++        message(FATAL_ERROR "Set NESRECOMP_SWITCH_GAME_DIR to a per-game sdmc:/ directory")
++    endif()
++    find_package(SDL2 CONFIG REQUIRED)
++    if(NOT TARGET SDL2::SDL2 OR NOT COMMAND nx_create_nro OR NOT COMMAND nx_generate_nacp)
++        message(FATAL_ERROR "Switch requires devkitPro switch-sdl2, switch-cmake and switch-tools")
++    endif()
++    set(dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
++    get_target_property(sources ${target} SOURCES)
++    list(REMOVE_ITEM sources "${NESRECOMP_CYC_DIR}/cyc_diagnostics.c")
++    set_property(TARGET ${target} PROPERTY SOURCES "${sources}")
++    target_sources(${target} PRIVATE "${dir}/host.c" "${dir}/diagnostics.c")
++    target_compile_definitions(${target} PRIVATE CYC_WITH_SDL CYC_SWITCH
++        "CYC_SWITCH_GAME_DIR=\"${NESRECOMP_SWITCH_GAME_DIR}\"")
++    target_include_directories(${target} PRIVATE "${dir}")
++    target_link_libraries(${target} PRIVATE SDL2::SDL2)
++    set_property(TARGET ${target} PROPERTY NESRECOMP_CYC_SDL TRUE)
++    set(nacp "${CMAKE_CURRENT_BINARY_DIR}/${target}.nacp")
++    nx_generate_nacp(OUTPUT "${nacp}" NAME "${NESRECOMP_SWITCH_TITLE}"
++        AUTHOR "${NESRECOMP_SWITCH_AUTHOR}" VERSION "${NESRECOMP_SWITCH_VERSION}")
++    nx_create_nro(${target} NACP "${nacp}")
++endfunction()
+diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
+new file mode 100644
+index 0000000..e29d915
+--- /dev/null
++++ b/tools/cyc/test_switch_host.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++"""ROM-free Switch host contracts, using SDL dummy drivers on the native host.
++
++Also emits a prepared cross-build project: generated by the native compiler,
++then compiled by a separate SDK (including Linux SDKs inside Docker).
++"""
++import argparse
++import os
++from pathlib import Path
++import subprocess
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument('--out', required=True, type=Path)
++    ap.add_argument('--recompiler', required=True, type=Path)
++    args = ap.parse_args()
++    root = Path(__file__).resolve().parents[2]
++    out = args.out.resolve()
++    data = out / 'data'
++    data.mkdir(parents=True, exist_ok=True)
++    (data / 'saves').mkdir(exist_ok=True)
++    # Original test program: solid background, an incrementing CPU RAM byte,
++    # and a fixed loop. No commercial ROM, code, graphics or audio assets.
++    program = bytes.fromhex('78 d8 a2 ff 9a a9 00 8d 00 20 8d 01 20 '
++                            'a9 3f 8d 06 20 a9 00 8d 06 20 a9 21 8d 07 20 '
++                            'a9 08 8d 01 20 e6 00 4c 21 80')
++    prg = bytearray([0xea]) * 32768
++    prg[:len(program)] = program
++    prg[-6:] = bytes.fromhex('00 80 00 80 00 80')
++    rom = data / 'rom.nes'
++    rom.write_bytes(b'NES\x1a' + bytes([2, 1]) + bytes(10) + prg + bytes(8192))
++    config = out / 'vanilla.toml'
++    config.write_text('[game]\ncycle_accurate=true\n', encoding='utf-8')
++
++    def run(command, name, success=True, env=None):
++        result = subprocess.run(list(map(str, command)), capture_output=True, text=True,
++                                env=env, timeout=600)
++        (out / (name + '.log')).write_text(result.stdout + result.stderr, encoding='utf-8')
++        assert (result.returncode == 0) == success, (name, result.returncode, result.stdout[-1000:], result.stderr[-2000:])
++        return result
++
++    prepared = out / 'prepared'
++    run(['python3', root / 'tools/cyc/prepare_project.py', '--rom', rom, '--game', config,
++         '--recompiler', args.recompiler.resolve(), '--out', prepared], 'prepare')
++    source = out / 'project'
++    source.mkdir(exist_ok=True)
++    # The platform production entry point remains runner/cyc/project. This
++    # harness reuses exactly the same core list and Mac-generated sources.
++    (source / 'CMakeLists.txt').write_text(f'''cmake_minimum_required(VERSION 3.20)
++project(SwitchHostContract C)
++set(NESRECOMP_ROOT "{root.as_posix()}")
++include("${{NESRECOMP_ROOT}}/runner/cyc/cyc.cmake")
++include("{prepared.as_posix()}/sources.cmake")
++add_executable(switch_fixture ${{NESRECOMP_CYC_SOURCES}} ${{CYC_PROJECT_SOURCES}})
++target_include_directories(switch_fixture PRIVATE ${{NESRECOMP_CYC_INCLUDE_DIRS}})
++target_compile_definitions(switch_fixture PRIVATE CYC_HOST_EXTRAS_STRONG=1
++    NESRECOMP_NATIVE_INTERVALS=${{CYC_PROJECT_NATIVE_INTERVALS}})
++target_link_libraries(switch_fixture PRIVATE ${{NESRECOMP_CYC_LIBRARIES}})
++if(NINTENDO_SWITCH)
++    set(NESRECOMP_SWITCH_GAME_DIR "sdmc:/switch/nesrecomp/fixture")
++    set(NESRECOMP_SWITCH_TITLE "NESRecomp test fixture")
++    nesrecomp_cyc_enable_sdl(switch_fixture)
++else()
++    find_package(SDL2 CONFIG REQUIRED)
++    get_target_property(sources switch_fixture SOURCES)
++    list(REMOVE_ITEM sources "${{NESRECOMP_CYC_DIR}}/cyc_diagnostics.c")
++    set_property(TARGET switch_fixture PROPERTY SOURCES "${{sources}}")
++    target_sources(switch_fixture PRIVATE "${{NESRECOMP_ROOT}}/runner/switch/host.c"
++        "${{NESRECOMP_ROOT}}/runner/switch/diagnostics.c")
++    target_compile_definitions(switch_fixture PRIVATE CYC_WITH_SDL CYC_SWITCH
++        CYC_SWITCH_GAME_DIR="{data.as_posix()}")
++    target_link_libraries(switch_fixture PRIVATE SDL2::SDL2)
++endif()
++''', encoding='utf-8')
++    binary = out / 'native'
++    run(['cmake', '-S', source, '-B', binary, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'], 'configure')
++    run(['cmake', '--build', binary, '--parallel', '4'], 'build')
++    env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
++    exe = binary / 'switch_fixture'
++    auto = data / 'saves/auto.cycstate'
++    auto.unlink(missing_ok=True)
++    run([exe, '--exit-after', '600', '--uncapped'], 'boot', env=env)
++    assert auto.stat().st_size > 100
++    log = (data / 'runtime.log').read_text()
++    assert 'Saved frame 600' in log and 'interp_rom=0' in log, log
++    first_state = auto.read_bytes()
++    run([exe, '--exit-after', '600', '--uncapped'], 'resume', env=env)
++    log = (data / 'runtime.log').read_text()
++    assert 'Saved frame 1200' in log, log
++    # Missing ROM and different PRG must fail without touching the last save.
++    saved = auto.read_bytes()
++    original = rom.read_bytes()
++    rom.unlink()
++    run([exe, '--exit-after', '1'], 'missing-rom', success=False, env=env)
++    wrong = bytearray(original); wrong[17] ^= 1
++    rom.write_bytes(wrong)
++    run([exe, '--exit-after', '1'], 'wrong-rom', success=False, env=env)
++    assert auto.read_bytes() == saved
++    rom.write_bytes(original)
++    # An incompatible/corrupt auto state cannot be silently overwritten.
++    auto.write_bytes(b'broken state')
++    run([exe, '--exit-after', '1'], 'bad-state', success=False, env=env)
++    assert auto.read_bytes() == b'broken state'
++    auto.write_bytes(first_state)
++    # Force a save-write error with a directory at the temporary filename.
++    blocked = auto.with_suffix(auto.suffix + '.tmp')
++    blocked.mkdir()
++    run([exe, '--exit-after', '1', '--uncapped'], 'save-error', success=False, env=env)
++    assert auto.read_bytes() == first_state
++    if blocked.exists():
++        blocked.rmdir()
++    # A directory in place of saves must fail before emulation starts.
++    save_dir = data / 'saves'; parked = data / 'parked-saves'
++    save_dir.rename(parked); save_dir.write_text('not a directory')
++    run([exe, '--exit-after', '1'], 'directory-error', success=False, env=env)
++    save_dir.unlink(); parked.rename(save_dir)
++    print('Switch host: SDL video/audio loop, 100% native fixture, autosave/resume, missing/wrong ROM, corrupt state, write-error preservation and directory-error checks passed')
++    print(f'Prepared cross-build source: {source}')
++
++
++if __name__ == '__main__':
++    main()

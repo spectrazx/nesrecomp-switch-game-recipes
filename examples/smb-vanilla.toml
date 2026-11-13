@@ -1,0 +1,3 @@
+[game]
+output_prefix = "smb1-vanilla"
+cycle_accurate = true
