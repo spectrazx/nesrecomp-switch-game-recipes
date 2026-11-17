@@ -1,0 +1,211 @@
+diff --git a/runner/cyc/hw.h b/runner/cyc/hw.h
+index bc043ce..572559c 100644
+--- a/runner/cyc/hw.h
++++ b/runner/cyc/hw.h
+@@ -108,7 +108,8 @@ void hw_native_set_masked_irq(bool enabled);
+ void hw_native_set_pal_intervals(bool enabled);
+ void hw_native_set_pal_raster(bool enabled);
+ void hw_native_set_sprite_fetch(bool enabled);
+-extern uint64_t ppu_native_fetch_cycles;
++void hw_native_set_sprite_fetch_jobs(bool enabled);
++extern uint64_t ppu_native_fetch_cycles, ppu_native_fetch_jobs;
+ 
+ static inline bool hw_native_reserve(void)
+ {
+diff --git a/runner/cyc/hw_ppu.c b/runner/cyc/hw_ppu.c
+index da494f0..4fb3089 100644
+--- a/runner/cyc/hw_ppu.c
++++ b/runner/cyc/hw_ppu.c
+@@ -1034,7 +1034,13 @@ HW_ALWAYS_INLINE void half_dot_status(void)
+ enum { DOT_UNKNOWN, DOT_BLANK, DOT_GENERAL, DOT_RENDER, DOT_IDLE, DOT_SPRITE };
+ static uint8_t dot_kind;
+ static bool sprite_fetch_enabled = true;
+-uint64_t ppu_native_fetch_cycles;
++uint64_t ppu_native_fetch_cycles, ppu_native_fetch_jobs;
++static bool sprite_fetch_jobs_enabled = true;
++void hw_native_set_sprite_fetch_jobs(bool enabled)
++{
++    hw_native_flush();
++    sprite_fetch_jobs_enabled = enabled;
++}
+ void hw_native_set_sprite_fetch(bool enabled)
+ {
+     hw_native_flush();
+@@ -1377,6 +1383,57 @@ static void sprite_fetch_half_dot(void)
+     ppu.ale = ppu.wr = 0;
+ }
+ 
++/* Eight unobserved dots load one output unit. Admission excludes mapper
++ * observers, read-triggered banks, CHR/CIRAM aliasing and recording. Retain
++ * the exact connector and latch state at the boundary, including reads of
++ * pattern bytes for out-of-range sprites and secondary-OAM wrap/full rules. */
++static void sprite_fetch_job(unsigned align)
++{
++    if (align < 2) sprite_fetch_half_dot();
++    unsigned slot = (unsigned)ppu.dot / 8u - 32u;
++    uint8_t y = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t tile = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t attr = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t x = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    ppu.sprite_row = (uint16_t)((ppu.scanline & 255) - y);
++    ppu.load_tile = tile; ppu.load_attr = attr;
++    ppu.spr_attr[slot] = attr; ppu.spr_x[slot] = x;
++    uint16_t nt = (uint16_t)(0x2000 | (ppu.v & 0x0fff));
++    ppu.fetch_data = ppu.ciram[(nt & 0x3ff) | hw_cart_ciram_a10(nt)];
++    unsigned row = ppu.sprite_row & 7u;
++    if (attr & 0x80) row = 7u - row;
++    uint16_t pattern;
++    if (ppu.sprite16)
++        pattern = (uint16_t)(((tile & 1u) << 12) | ((tile & 0xfeu) << 4) |
++                            row | (((ppu.sprite_row & 8u) ^ ((attr & 0x80) ? 8u : 0u)) << 1));
++    else pattern = (uint16_t)((ppu.sprite_table ? 0x1000 : 0) | (tile << 4) | row);
++    uint8_t lo = hw_cart.chr[hw_cart_chr_index(pattern)];
++    uint8_t hi = hw_cart.chr[hw_cart_chr_index(pattern | 8u)];
++    ppu.par_chr = pattern | 8u;
++    ppu.octal_latch = (uint8_t)ppu.par_chr;
++    ppu.vbus = (uint16_t)((ppu.par_chr & 0xff00) | hi);
++    if (attr & 0x40) { lo = flip_bits(lo); hi = flip_bits(hi); }
++    bool in_range = ppu.sprite_row < (ppu.sprite16 ? 16u : 8u);
++    ppu.spr_lo[slot] = in_range ? lo : 0;
++    ppu.spr_hi[slot] = in_range ? hi : 0;
++    ppu.oam_addr = 0; ppu.cur_has_s0 = ppu.next_has_s0;
++    ppu.oam_latch = ppu.oam_buffer = ppu.oam_buffer_in = x;
++    ppu.blnk_latch = ppu.pal_enable = ppu.copy_v = ppu.ale = ppu.wr = ppu.commit = 0;
++    ppu.rd = 1;
++    ppu.overflow_late = ppu.overflow;
++    ppu.s0hit = ppu.s0hit_late = ppu.s0hit || ppu.s0hit_pending1 || ppu.s0hit_pending2;
++    ppu.s0hit_pending1 = ppu.s0hit_pending2 = 0;
++    ppu.vset_latch2 = 0;
++    for (unsigned i = 1; i < 4; ++i) {
++        ppu.color[i] = ppu.color[0];
++        if (cyc_background_enabled) cyc_background_pipe[i] = cyc_background_pipe[0];
++    }
++    ppu.dot += 8;
++    if (hw_zapper.port) hw_zapper.dots += 8;
++    io_bus_decay_span(8);
++    ++ppu_native_fetch_jobs;
++}
++
+ static inline void render_span_prefix(void)
+ {
+     ++ppu.dot;
+@@ -1909,9 +1966,19 @@ void ppu_native_interval_run(unsigned cycles, unsigned align)
+     if (dot_kind == DOT_SPRITE) {
+         /* Admission excludes address observers: no intermediate mapper
+          * timestamp, IRQ or PRG mapping deadline can be hidden here. */
+-        for (unsigned i = 0; i < cycles * 3u; ++i) {
+-            if (align < 2) { sprite_fetch_half_dot(); sprite_fetch_dot(); }
+-            else { sprite_fetch_dot(); sprite_fetch_half_dot(); }
++        bool jobs = sprite_fetch_jobs_enabled && !hw_cart.chr_ciram &&
++                    (hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 66);
++#ifdef NESRECOMP_CYCLE_HDPACK
++        if (hdpack_recording()) jobs = false;
++#endif
++        for (unsigned i = 0, dots = cycles * 3u; i < dots;) {
++            if (jobs && !(ppu.dot & 7) && dots - i >= 8 && !ppu.commit) {
++                sprite_fetch_job(align); i += 8;
++            } else {
++                if (align < 2) { sprite_fetch_half_dot(); sprite_fetch_dot(); }
++                else { sprite_fetch_dot(); sprite_fetch_half_dot(); }
++                ++i;
++            }
+         }
+         ppu_native_fetch_cycles += cycles;
+         return;
+@@ -2274,7 +2341,7 @@ void ppu_state_reloaded(void)
+ void ppu_power_on(void)
+ {
+     ppu_native_sprite_spans = ppu_native_sprite_dots = 0;
+-    ppu_native_fetch_cycles = 0;
++    ppu_native_fetch_cycles = ppu_native_fetch_jobs = 0;
+     memset(&ppu, 0, sizeof(ppu));
+     sm_rest = false;
+     dot_kind = DOT_UNKNOWN;
+diff --git a/runner/cyc/tests/raster_interval_probe.c b/runner/cyc/tests/raster_interval_probe.c
+index 82e11f0..ec7abfa 100644
+--- a/runner/cyc/tests/raster_interval_probe.c
++++ b/runner/cyc/tests/raster_interval_probe.c
+@@ -70,14 +70,16 @@ static void replay_route(bool reference, bool sprite_fetch)
+ }
+ int main(int argc, char **argv)
+ {
+-    bool reference=false, pal=false, raster=true, sprite_fetch=false;
++    bool reference=false, pal=false, raster=true, sprite_fetch=false, fetch_jobs=true;
+     for (int i=1;i<argc;++i) {
+         if (!strcmp(argv[i],"--reference")) reference=true;
+         if (!strcmp(argv[i],"--pal")) pal=true;
+         if (!strcmp(argv[i],"--sprite-fetch")) sprite_fetch=true;
++        if (!strcmp(argv[i],"--no-sprite-fetch-jobs")) fetch_jobs=false;
+         if (!strcmp(argv[i],"--no-pal-raster")) raster=false;
+     }
+     hw_native_set_pal_raster(raster);
++    hw_native_set_sprite_fetch_jobs(fetch_jobs);
+     if (sprite_fetch) hw_native_set_sprite_fetch(!reference);
+     static uint8_t image[16+65536+16384];
+     static const unsigned ntsc_boards[]={0,1,4,66}, pal_boards[]={0,3};
+@@ -154,6 +156,13 @@ int main(int argc, char **argv)
+                 unsigned n=q%4==0?limit:1+(q%limit);
+                 if (sprite_fetch) {
+                     for (unsigned i=0;i<32;++i) ppu.oam2[i]=(uint8_t)(q*17+i*31);
++                    ppu.oam2_addr = (uint8_t)(q & 31);
++                    ppu.oam2_full = (q % 7) == 0;
++                    if (q%13==0) {
++                        bus_access(0x2006,(uint8_t)(q&0x3f),true);
++                        bus_access(0x2006,(uint8_t)(q*19),true);
++                        bus_access(0x2007,(uint8_t)(q*23),true);
++                    }
+                     if (q%5==0) bus_access(0x2005,(uint8_t)q,true);
+                     if (q%7==0) bus_access(0x2001,(uint8_t)(q*3),true);
+                     if (q%11==0) bus_access(0x2002,0,false);
+@@ -181,11 +190,19 @@ int main(int argc, char **argv)
+             replay_route(reference, sprite_fetch);
+             check(machine==cyc_hw_state_hash() && memory==cyc_mem_state_hash() && background==background_hash(),
+                   "current-build raster/frame/background replay");
++            if (sprite_fetch && !pal && !reference) {
++                if (hw_cart.watch_ppu_addr || !fetch_jobs)
++                    check(ppu_native_fetch_jobs == 0,"fetch job observer/reference fallback");
++                else check(ppu_native_fetch_jobs > 0,"fetch jobs used in every eligible board/alignment");
++            }
+         }
+     }
+ #if NESRECOMP_PPU_HLE
+-    if (!reference && sprite_fetch && !pal)
++    if (!reference && sprite_fetch && !pal) {
+         check(ppu_native_fetch_cycles>20,"sprite fetch intervals actually used");
++        if (fetch_jobs) check(ppu_native_fetch_jobs>20,"whole sprite fetch jobs actually used");
++        else check(ppu_native_fetch_jobs==0,"sprite fetch jobs disabled for interval-only reference");
++    }
+     if (!sprite_fetch && !reference && (!pal || raster)) check(ppu_native_raster_tiles>100,"whole raster job actually used");
+ #endif
+     return 0;
+diff --git a/tools/cyc/test_raster_intervals.py b/tools/cyc/test_raster_intervals.py
+index d0ec786..26979c3 100644
+--- a/tools/cyc/test_raster_intervals.py
++++ b/tools/cyc/test_raster_intervals.py
+@@ -27,6 +27,8 @@ def main():
+             command.append('--pal')
+         if args.sprite_fetch:
+             command.append('--sprite-fetch')
++        if mode == 'fetch-reference':
++            command.append('--no-sprite-fetch-jobs')
+         if mode == 'raster-reference':
+             command.append('--no-pal-raster')
+         if mode == 'reference':
+@@ -51,6 +53,8 @@ def main():
+         raise AssertionError(f'row {i}: {old!r} != {new!r}; diagnostics in {out}')
+     if args.pal and run('raster-reference') != before:
+         raise AssertionError('PAL interval-only reference differs from coupled clocks')
++    if args.sprite_fetch and run('fetch-reference') != before:
++        raise AssertionError('Sprite fetch interval-only reference differs from coupled clocks')
+     configurations = 20 if args.pal else 32
+     if len(before) != configurations * 129:
+         raise AssertionError(f'Expected {configurations} configurations with 128 cases, got {len(before)} rows')
+@@ -63,7 +67,7 @@ def main():
+                   'mirroring/four-screen, scroll/fine X, palette/emphasis/greyscale, '
+                   'OAM/overflow/sprite-zero, Zapper, decay deadlines, background records, '
+                   'current-build serialized-state replay and full PCM' +
+-                  (', sprite fetch/8x16/flips/register invalidation' if args.sprite_fetch else '')))
++                  (', sprite fetch jobs/8x16/flips/OAM wrap-full/register-data-port invalidation' if args.sprite_fetch else '')))
+     (out / 'results.json').write_text(json.dumps(result, indent=2) + '\n',
+                                     encoding='utf-8', newline='\n')
+     print(f'PASS: {configurations * 128} varied raster cases and current-build replay; hardware/raster/RAM/background/PCM identical')

@@ -1,0 +1,311 @@
+diff --git a/docs/SWITCH.md b/docs/SWITCH.md
+index b078fbd..a2cc012 100644
+--- a/docs/SWITCH.md
++++ b/docs/SWITCH.md
+@@ -171,6 +171,23 @@ on the first physical SD test and is not enabled by the Mario build recipe.
+ Logging remains active. Every five seconds `runtime.log` reports FPS and
+ average emulation, audio, presentation and wait milliseconds. Startup names
+ the renderer, PPU and save setting for the next physical-console measurement.
++The `audio_supply` report adds generated PCM duration relative to wall time,
++queued output duration and software queue observations. Sustained supply below
++one means the producer cannot feed real-time playback. Empty queue observations
++are not exact hardware underrun counts; the existing dropped-chunk counter
++tracks excess output discarded at the upper limit, not starvation.
++
++For an explicit development launch, `--nxlink-log` connects stdout to the
++nxlink host while keeping stderr's SD log. Launch it using nxlink's `-s` server
++and `--args '--nxlink-log --exit-after 1800'` (the frame limit is optional).
++Host timing/audio reports are mirrored to both destinations. A failed or
++unavailable connection falls back to the SD log. Ordinary launches do not
++initialize sockets. Network diagnostics also report applet/operation/performance
++mode and attempt a read-only CPU clock query; clock-service failures are logged
++and no clocks are changed. Docker users must publish console TCP port 28771,
++in addition to reaching the console's NetLoader TCP port 28280 for upload.
++The native SDL contract covers metrics and non-Switch network fallback;
++physical network/service behavior needs console qualification.
+ 
+ For the Mario recipe, place:
+ 
+diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
+index b5b2316..8732100 100644
+--- a/runner/cyc/cyc_host.c
++++ b/runner/cyc/cyc_host.c
+@@ -1271,7 +1271,11 @@ static int host_main(int argc, char **argv) {
+ #endif
+             ++i;
+         }
+-        else if (!strcmp(argv[i], "--hidden") || !strcmp(argv[i], "--uncapped") || !strcmp(argv[i], "--pause-unfocused")) {
++        else if (!strcmp(argv[i], "--hidden") || !strcmp(argv[i], "--uncapped") || !strcmp(argv[i], "--pause-unfocused")
++#ifdef CYC_SWITCH
++                 || !strcmp(argv[i], "--nxlink-log")
++#endif
++        ) {
+ #if defined(CYC_WITH_SDL)
+             cyc_sdl_option(argv[i], "");
+ #endif
+@@ -2007,9 +2011,9 @@ session_restart:
+ int main(int argc, char **argv)
+ {
+ #ifdef CYC_SWITCH
+-    int cyc_switch_init(void);
++    int cyc_switch_init(int argc, char **argv);
+     void cyc_switch_shutdown(void);
+-    if (!cyc_switch_init()) return 2;
++    if (!cyc_switch_init(argc, argv)) return 2;
+ #endif
+ #ifdef CYC_STARTUP_DIAGNOSTICS
+     /* Capture even failures in argument parsing, settings or launcher setup. */
+diff --git a/runner/switch/host.c b/runner/switch/host.c
+index 6307008..90c14db 100644
+--- a/runner/switch/host.c
++++ b/runner/switch/host.c
+@@ -3,12 +3,14 @@
+ #include <SDL.h>
+ #include <errno.h>
+ #include <stdio.h>
++#include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ #ifdef __SWITCH__
+ #include <switch.h>
++#include <netinet/in.h>
+ #endif
+ #include "cyc_core.h"
+ #include "cyc_profiler.h"
+@@ -36,19 +38,73 @@ static bool ready, storage_failed, suspended;
+ static long exit_after = -1;
+ static bool uncapped;
+ static unsigned saves;
++static bool network_log;
++#ifdef __SWITCH__
++static bool sockets_ready;
++static int log_socket = -1;
++#endif
++
++/* Network output is opt-in and infrequent. Keep stderr's SD log intact. */
++static void runner_log(const char *format, ...)
++{
++    va_list ap;
++    va_start(ap, format);
++    if (network_log) {
++        va_list copy;
++        va_copy(copy, ap);
++        vfprintf(stdout, format, copy);
++        va_end(copy);
++        fflush(stdout);
++    }
++    vfprintf(stderr, format, ap);
++    va_end(ap);
++}
++
++static void report_platform(void)
++{
++#ifdef __SWITCH__
++    if (!network_log) return;
++    u32 cpu_hz = 0;
++    Result clock_result = clkrstInitialize();
++    if (R_SUCCEEDED(clock_result)) {
++        ClkrstSession session;
++        clock_result = clkrstOpenSession(&session, PcvModuleId_CpuBus, 3);
++        if (R_SUCCEEDED(clock_result)) {
++            clock_result = clkrstGetClockRate(&session, &cpu_hz);
++            clkrstCloseSession(&session);
++        }
++        clkrstExit();
++    }
++    runner_log("platform applet_type=%u operation_mode=%u performance_mode=%u cpu_hz=%u clock_result=0x%08X\n",
++        (unsigned)appletGetAppletType(), (unsigned)appletGetOperationMode(),
++        (unsigned)appletGetPerformanceMode(), cpu_hz, clock_result);
++#endif
++}
+ typedef struct {
+     Uint64 frames, emulation, audio, present, sleep;
++    Uint64 source_samples, queued_bytes, queue_polls, queue_empty_polls;
++    Uint32 queue_min, queue_max;
+ } FrameTimings;
+ #if NESRECOMP_CORE_PROFILER
+ static uint64_t profile_clock(void) { return (uint64_t)SDL_GetPerformanceCounter(); }
+ #endif
+-static void report_timings(const FrameTimings *t, Uint64 elapsed, Uint64 frequency)
++static void report_timings(const FrameTimings *t, Uint64 elapsed, Uint64 frequency,
++                           Uint64 bytes_per_second)
+ {
+     if (!t->frames || !elapsed) return;
+     double per_frame = 1000.0 / (double)frequency / (double)t->frames;
+-    fprintf(stderr, "performance fps=%.2f frames=%llu emulation_ms=%.3f audio_ms=%.3f present_ms=%.3f wait_ms=%.3f\n",
++    runner_log("performance fps=%.2f frames=%llu emulation_ms=%.3f audio_ms=%.3f present_ms=%.3f wait_ms=%.3f\n",
+         (double)t->frames * (double)frequency / (double)elapsed, (unsigned long long)t->frames,
+         t->emulation * per_frame, t->audio * per_frame, t->present * per_frame, t->sleep * per_frame);
++    double wall_ms = 1000.0 * (double)elapsed / (double)frequency;
++    double produced_ms = 1000.0 * (double)t->source_samples / 48000.0;
++    double byte_ms = 1000.0 / (double)bytes_per_second;
++    runner_log("audio_supply produced_ms=%.2f wall_ms=%.2f ratio=%.4f queued_ms=%.2f "
++               "queue_empty_polls=%llu queue_polls=%llu queue_min_ms=%.2f queue_max_ms=%.2f\n",
++        produced_ms, wall_ms, produced_ms / wall_ms, t->queued_bytes * byte_ms,
++        (unsigned long long)t->queue_empty_polls, (unsigned long long)t->queue_polls,
++        t->queue_min * byte_ms, t->queue_max * byte_ms);
++    report_platform();
+ #if NESRECOMP_CORE_PROFILER
+     cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
+ #endif
+@@ -96,8 +152,12 @@ bool cyc_sdl_error_box(const char *title, const char *text)
+     return true;
+ }
+ 
+-int cyc_switch_init(void)
++int cyc_switch_init(int argc, char **argv)
+ {
++    bool requested = false;
++    network_log = false;
++    for (int i = 1; i < argc; ++i)
++        if (!strcmp(argv[i], "--nxlink-log")) requested = true;
+     if (!mkdirs(CYC_SWITCH_SAVES ? CYC_SWITCH_GAME_DIR "/saves" : CYC_SWITCH_GAME_DIR)) {
+         cyc_sdl_error_box("Storage unavailable", "Cannot create the game's directory on the SD card.");
+         return 0;
+@@ -106,11 +166,31 @@ int cyc_switch_init(void)
+     if (chdir(CYC_SWITCH_GAME_DIR)) return 0;
+     if (!freopen(CYC_SWITCH_GAME_DIR "/runtime.log", "w", stderr)) return 0;
+     setvbuf(stderr, NULL, _IONBF, 0);
+-    fprintf(stderr, "Switch runner %s: saves=%s\n", CYC_SWITCH_VERSION, CYC_SWITCH_SAVES ? "enabled" : "disabled");
++#ifdef __SWITCH__
++    if (requested && __nxlink_host.s_addr) {
++        sockets_ready = R_SUCCEEDED(socketInitializeDefault());
++        if (sockets_ready) {
++            log_socket = nxlinkConnectToHost(true, false);
++            network_log = log_socket >= 0;
++            if (network_log) setvbuf(stdout, NULL, _IONBF, 0);
++        }
++    }
++#endif
++    runner_log("Switch runner %s: saves=%s network_log=%s requested=%u\n", CYC_SWITCH_VERSION,
++        CYC_SWITCH_SAVES ? "enabled" : "disabled", network_log ? "connected" : "off", requested);
++    report_platform();
+     return 1;
+ }
+ 
+-void cyc_switch_shutdown(void) { fflush(stderr); }
++void cyc_switch_shutdown(void)
++{
++    fflush(stderr);
++#ifdef __SWITCH__
++    if (log_socket >= 0) { fflush(stdout); close(log_socket); log_socket = -1; }
++    if (sockets_ready) { socketExit(); sockets_ready = false; }
++#endif
++    network_log = false;
++}
+ 
+ int cyc_sdl_prelaunch(const char **rom_path, const char *bios, NesFdsHleAsk *hle,
+                       const char **saved_bios)
+@@ -231,7 +311,7 @@ int cyc_sdl_main(const char *title, int scale)
+     int vsync_result = SDL_RenderSetVSync(renderer, 0);
+     SDL_RendererInfo renderer_info;
+     if (!SDL_GetRendererInfo(renderer, &renderer_info))
+-        fprintf(stderr, "Renderer=%s flags=%u vsync_off_result=%d PPU=%s\n",
++        runner_log("Renderer=%s flags=%u vsync_off_result=%d PPU=%s\n",
+             renderer_info.name, renderer_info.flags, vsync_result, cyc_ppu_implementation());
+     texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256, 240);
+     if (!texture) { fatal = "Cannot create the NES frame texture."; goto cleanup; }
+@@ -244,7 +324,9 @@ int cyc_sdl_main(const char *title, int scale)
+     }
+     stream = SDL_NewAudioStream(AUDIO_S16SYS, 1, 48000, have.format, have.channels, have.freq);
+     if (!stream || !cyc_audio_enable(48000)) { fatal = "Cannot configure NES audio conversion."; goto cleanup; }
+-    fprintf(stderr, "Audio %d Hz channels=%u format=%u\n", have.freq, have.channels, have.format);
++    runner_log("Audio %d Hz channels=%u format=%u buffer_frames=%u source_rate=48000\n",
++        have.freq, have.channels, have.format, have.samples);
++    const Uint64 bytes_per_second = (Uint64)have.freq * have.channels * (SDL_AUDIO_BITSIZE(have.format) / 8);
+     SDL_PauseAudioDevice(audio, 0);
+     pad = open_pad();
+     SDL_GameControllerUpdate();
+@@ -263,7 +345,7 @@ int cyc_sdl_main(const char *title, int scale)
+     bool running = true, old_save = false, old_load = false;
+     const Uint64 frequency = SDL_GetPerformanceFrequency();
+     const double period = cyc_host_frame_seconds() * (double)frequency;
+-    fprintf(stderr, "Region=%s target_fps=%.3f core_profiler=%s\n",
++    runner_log("Region=%s target_fps=%.3f core_profiler=%s\n",
+         cyc_region() == CYC_REGION_PAL ? "PAL" : "NTSC", 1.0 / cyc_host_frame_seconds(),
+         NESRECOMP_CORE_PROFILER ? "sampled" : "off");
+ #if NESRECOMP_CORE_PROFILER
+@@ -320,17 +402,25 @@ int cyc_sdl_main(const char *title, int scale)
+         ++timings.frames;
+         ++frames;
+         int16_t pcm[4096]; size_t count;
+-        while ((count = cyc_audio_read(pcm, 4096)))
++        while ((count = cyc_audio_read(pcm, 4096))) {
++            timings.source_samples += count;
+             if (SDL_AudioStreamPut(stream, pcm, (int)(count * sizeof(*pcm)))) {
+                 fatal = "Audio conversion failed."; running = false; break;
+             }
++        }
+         Uint32 limit = (Uint32)(have.freq / 10) * have.channels * (SDL_AUDIO_BITSIZE(have.format) / 8);
+         unsigned char converted[16384]; int bytes;
+         while ((bytes = SDL_AudioStreamGet(stream, converted, sizeof(converted))) > 0) {
+-            if (SDL_GetQueuedAudioSize(audio) + (Uint32)bytes > limit) { ++dropped; continue; }
++            Uint32 queued = SDL_GetQueuedAudioSize(audio);
++            if (!timings.queue_polls || queued < timings.queue_min) timings.queue_min = queued;
++            if (queued > timings.queue_max) timings.queue_max = queued;
++            ++timings.queue_polls;
++            if (!queued) ++timings.queue_empty_polls;
++            if (queued + (Uint32)bytes > limit) { ++dropped; continue; }
+             if (SDL_QueueAudio(audio, converted, (Uint32)bytes)) {
+                 fatal = "Audio queue failed."; running = false; break;
+             }
++            timings.queued_bytes += (Uint32)bytes;
+         }
+         if (bytes < 0) { fatal = "Audio conversion failed."; break; }
+         stage_end = SDL_GetPerformanceCounter();
+@@ -348,7 +438,7 @@ int cyc_sdl_main(const char *title, int scale)
+         Uint64 now = SDL_GetPerformanceCounter();
+         timings.present += now - stage;
+         if (now - report_at >= frequency * 5) {
+-            report_timings(&timings, now - report_at, frequency);
++            report_timings(&timings, now - report_at, frequency, bytes_per_second);
+             memset(&timings, 0, sizeof(timings)); report_at = now;
+         }
+         if (now - checkpoint >= frequency * 30) { save_to(AUTO_PATH); checkpoint = now; }
+@@ -368,8 +458,8 @@ int cyc_sdl_main(const char *title, int scale)
+     }
+     if (!fatal && !storage_failed && !save_to(AUTO_PATH)) storage_failed = true;
+     if (storage_failed) fatal = "Could not save progress to the SD card. See runtime.log.";
+-    report_timings(&timings, SDL_GetPerformanceCounter() - report_at, frequency);
+-    fprintf(stderr, "frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
++    report_timings(&timings, SDL_GetPerformanceCounter() - report_at, frequency, bytes_per_second);
++    runner_log("frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
+         (unsigned long long)frames, (double)(SDL_GetPerformanceCounter() - started) / frequency,
+         (unsigned long long)cyc_run_native_cycles, (unsigned long long)cyc_run_interp_rom_cycles,
+         (unsigned long long)cyc_run_interp_ram_cycles, (unsigned long long)dropped, saves);
+diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
+index 26d2636..1aa32ff 100644
+--- a/tools/cyc/test_switch_host.py
++++ b/tools/cyc/test_switch_host.py
+@@ -6,6 +6,7 @@ then compiled by a separate SDK (including Linux SDKs inside Docker).
+ """
+ import argparse
+ import os
++import re
+ from pathlib import Path
+ import subprocess
+ 
+@@ -90,7 +91,9 @@ endif()
+         # ignored entirely by a no-save build. Also run beyond the old 30s
+         # checkpoint to catch an accidentally retained periodic write.
+         auto.write_bytes(b'preserved old state')
+-        run([exe, '--exit-after', '600', '--uncapped'], 'no-saves-existing', env=env)
++        run([exe, '--exit-after', '600', '--uncapped', '--nxlink-log'], 'no-saves-existing', env=env)
++        launch_log = (data / 'runtime.log').read_text()
++        assert 'network_log=off requested=1' in launch_log, launch_log
+         assert auto.read_bytes() == b'preserved old state'
+         save_dir = data / 'saves'; parked = data / 'parked-saves'
+         save_dir.rename(parked); save_dir.write_text('not a directory')
+@@ -100,6 +103,10 @@ endif()
+         if args.profile_core:
+             assert 'core_profiler=sampled' in log and 'core_profile estimated_ppu_ms=' in log, log
+         assert 'saves=disabled' in log and 'saves=0' in log and 'Saved frame' not in log, log
++        supply = re.findall(r'audio_supply produced_ms=([\d.]+) wall_ms=([\d.]+) ratio=([\d.]+)', log)
++        assert supply and all(float(p) > 0 and float(w) > 0 for p, w, _ in supply), log
++        assert all(0.9 < float(ratio) < 1.1 for _, _, ratio in supply), supply
++        assert 'queue_empty_polls=' in log and 'source_rate=48000' in log, log
+         assert save_dir.read_text() == 'not a directory'
+         save_dir.unlink(); parked.rename(save_dir)
+         print('Switch no-save host: ignored old state and invalid save directory; 1900 paced frames passed without checkpoint or exit saves')

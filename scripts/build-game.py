@@ -27,6 +27,9 @@ def main():
     ap.add_argument('--output-dir', type=Path, help='Override packaged NRO directory')
     ap.add_argument('--version', help='Override games/<game>/VERSION for this build')
     ap.add_argument('--profile-core', action='store_true', help='Enable sampled Switch core timing diagnostics')
+    ap.add_argument('--sprite-kernel', choices=['auto', 'portable'], default='auto',
+                    help='Compare explicit architecture kernels with portable C')
+    ap.add_argument('--benchmark-input', type=Path, help='Embed an existing NES pad route as a read-only NRO asset')
     args = ap.parse_args()
     if not args.game or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in args.game):
         ap.error('Invalid game module name')
@@ -45,7 +48,21 @@ def main():
     engine = ROOT / '.local/src/nesrecomp'
     build = ROOT / 'build/games' / args.game
     output = args.output_dir.expanduser().resolve() if args.output_dir else build
-    host = build / ('host' if args.variant == 'baseline' else 'host-optimized')
+    route = args.benchmark_input.expanduser().resolve() if args.benchmark_input else None
+    romfs_root = None
+    route_sha256 = None
+    if route:
+        if not route.is_file():
+            ap.error('Benchmark input route must exist')
+        route_bytes = route.read_bytes()
+        route_sha256 = hashlib.sha256(route_bytes).hexdigest()
+        romfs_root = build / 'benchmark-assets' / route_sha256
+        romfs_root.mkdir(parents=True, exist_ok=True)
+        staged_route = romfs_root / 'benchmark-input.txt'
+        if not staged_route.is_file() or staged_route.read_bytes() != route_bytes:
+            staged_route.write_bytes(route_bytes)
+    kernel_suffix = '-portable' if args.sprite_kernel == 'portable' else ''
+    host = build / (('host' if args.variant == 'baseline' else 'host-optimized') + kernel_suffix)
     compiler = ROOT / 'build/recompiler/NESRecomp'
     run('cmake', '-S', engine / 'recompiler', '-B', compiler.parent, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release')
     run('cmake', '--build', compiler.parent, '--parallel', '4')
@@ -56,6 +73,7 @@ def main():
                 f'-DNESRECOMP_ROOT={engine}', f'-DNESRECOMP_ROM={rom_path}',
                 f'-DNESRECOMP_HOST_COMPILER={compiler_path}', f'-DGAME_OUTPUT_DIR={output}',
                 f'-DNESRECOMP_GAME_VERSION={version}',
+                f'-DGAME_SPRITE_KERNEL={args.sprite_kernel}',
                 '-DNESRECOMP_CORE_PROFILER=OFF',
                 '-DGAME_PPU_OVERRIDE=']
 
@@ -73,8 +91,9 @@ def main():
     backend = ('native' if native else 'docker') if args.backend == 'auto' else args.backend
     extras = ['-DNESRECOMP_SWITCH_SAVES=OFF', '-DNESRECOMP_SWITCH_LTO=ON', f'-DNESRECOMP_SWITCH_VERSION={version}',
               f'-DNESRECOMP_CORE_PROFILER={"ON" if args.profile_core else "OFF"}',
+              f'-DNESRECOMP_SWITCH_ROMFS_ROOT={romfs_root or ""}',
               f'-DGAME_PPU_OVERRIDE={args.ppu or ""}']
-    binary = build / ('switch' if backend == 'native' else 'switch-docker')
+    binary = build / (('switch' if backend == 'native' else 'switch-docker') + kernel_suffix)
     if backend == 'native':
         if not native:
             ap.error('Native devkitA64 is not installed; use --backend docker')
@@ -99,9 +118,25 @@ def main():
     if Path(artifact_name).name != artifact_name or not artifact_name.endswith('.nro'):
         raise ValueError('Invalid artifact name from CMake')
     artifact = output / artifact_name
-    run(sys.executable, ROOT / 'scripts/inspect-nro.py', artifact, '--expect-version', version)
-    manifest = dict(game=args.game, version=version, artifact=artifact_name,
+    run(sys.executable, ROOT / 'scripts/inspect-nro.py', artifact, '--expect-version', version,
+        *(['--expect-romfs'] if route else []))
+    region = (binary / 'game-region.txt').read_text().strip()
+    if region not in ('PAL', 'NTSC'):
+        raise ValueError('Packaged game requires an explicit region for comparison metadata')
+    manifest = dict(region=region,
+                    switch_comparison_policy='pal_raster' if region == 'PAL' else 'sprite_fetch_jobs',
+                    game=args.game, version=version, artifact=artifact_name,
                     core_profiler=args.profile_core,
+                    nxlink_log_supported=True,
+                    switch_benchmark_supported=True,
+                    switch_gameplay_benchmark_supported=True,
+                    switch_comparison_suite_supported=True,
+                    benchmark_input_sha256=route_sha256,
+                    benchmark_input_asset='romfs:/benchmark-input.txt' if route else None,
+                    sprite_kernel=args.sprite_kernel,
+                    engine_revision=subprocess.check_output(
+                        ['git', '-C', str(engine), 'rev-parse', 'HEAD'], text=True).strip(),
+                    engine_patch_sha256=hashlib.sha256((ROOT / 'patches/nesrecomp-switch.patch').read_bytes()).hexdigest(),
                     sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
                     rom_sha256=hashlib.sha256(rom.read_bytes()).hexdigest())
     manifest_path = output / 'build.json'

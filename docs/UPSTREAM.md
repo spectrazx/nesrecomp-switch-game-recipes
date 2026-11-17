@@ -1,5 +1,113 @@
 # Notes for future NESRecomp contributions
 
+The [2026-11-17 PR plan and file inventory](NESRECOMP_PR_PLAN.md) counts the
+complete contribution against our pinned base, proposes a focused platform PR
+and separate core changes, and records compatibility with newer upstream.
+
+[Grouped sprite fetches](SPRITE_FETCH_JOBS.md) follow the 0.2.10 sprite-fetch
+specialization. The core/test and frontend comparison patches are
+`nesrecomp-sprite-fetch-jobs.patch` and
+`nesrecomp-switch-sprite-fetch-jobs-comparison.patch`. They apply after
+`bf70e97b7c6a…`, preserving all three reference paths across 4,096 HLE/LLE cases.
+Desktop process CPU falls another 8.13%; a direct comparison with rebuilt
+0.2.9 source measures 26.13% less CPU for the combined changes. Both games'
+captured output and Mario's demo remain exact. The six-leg Switch comparison
+now passes: 62.72 → 66.62 FPS uncapped, 6.89% less emulation time, all states
+matching desktop at 1.02 GHz. Normal paced play and listening remain pending.
+
+[NTSC sprite-fetch specialization](MARIO_SPRITE_FETCH.md) is isolated in
+`patches/nesrecomp-sprite-fetch.patch`, followed by the Switch policy comparison
+in `patches/nesrecomp-switch-sprite-fetch-comparison.patch`. They apply after
+`fe8c472c5982…`. New HLE/LLE sprite-fetch contracts and both games' exact
+1,800-frame output comparisons pass. Desktop process CPU falls 18.93%; console
+performance and listening verification are pending for Mario 0.2.10. No PR is
+opened, and no game-specific code is added to the core.
+
+[PAL eight-pixel rendering](PAL_RASTER_BATCHING.md) is isolated in
+`patches/nesrecomp-pal-raster.patch`, followed by
+`patches/nesrecomp-switch-pal-raster-comparison.patch`. They apply after the
+0.1.8 source snapshot `f98804015bcc…`. The expanded PAL contract caught and now
+covers the regional red/green emphasis swap, including background capture.
+All 2,560 PAL and 4,096 existing NTSC raster cases pass, as do both games'
+1,800-frame output comparisons and 903 Mesen pictures. The final build saves
+22.58% desktop CPU; its six-leg Switch suite gains 29.29% throughput with all
+states matching desktop at 1.02 GHz. Adventure Island 0.1.9 is promoted locally
+and uploaded to its development entry. No PR has been opened.
+
+[PAL native intervals](PAL_NATIVE_INTERVALS.md) are isolated in
+`patches/nesrecomp-pal-intervals.patch`, followed by the regional comparison
+runner in `patches/nesrecomp-switch-pal-comparison.patch`. They apply after the
+held-IRQ/comparison snapshot `bb674c54036b…`. All five PAL phases on NROM/CNROM,
+HLE/LLE timing tests, 1,800 untraced Adventure Island frame/audio records and
+903 independent Mesen pictures pass. Desktop CPU falls 13.28%; a six-leg
+Switch gameplay comparison gains 13.43% throughput with 12.21% less emulation
+time and all states matching desktop at 1.02 GHz. Adventure Island 0.1.8 is
+promoted locally and uploaded to the development entry. No game-specific code
+is added to the core.
+
+[Held IRQ batching](MASKED_IRQ_BATCHING.md) is isolated in
+`nesrecomp-masked-irq.patch` after the PAL render-tail source snapshot. It
+qualifies only settled masked APU frame IRQs and observes the CPU mask on each
+cursor access; interrupt-boundary tests and LLE/HLE native-interval tests pass.
+Mario's 1,800-frame neutral and gameplay outputs remain exact. Desktop CPU
+reduction is 46.68% on the neutral route and 3.55% on the gameplay route;
+two console suites verify a 74.73% demo throughput gain and unchanged active
+gameplay throughput, with all 12 final states matching desktop at 1.02 GHz.
+Mario 0.2.9 is promoted locally and uploaded to the development entry. The subsequent
+`nesrecomp-switch-comparison-suite.patch` adds a six-leg automatic comparison,
+in-memory state restoration and pad-route restart. The no-save SDL fixture
+matches headless state in every leg. Core and frontend patches reconstruct the
+exact as-built source through a temporary index; the real index is untouched.
+
+The [stable PAL render-tail candidate](PAL_PPU_TAIL.md) is isolated in
+`nesrecomp-pal-ppu-tail.patch` after the gameplay/replay snapshot. It removes
+repeated PPU dispatch while preserving every device edge and sample position.
+Its independent reference switch and differential CTest belong to the core.
+Regional contracts, both 1,800-frame game comparisons, save continuation and
+903 independent PAL reference pictures pass. Four BAAB console runs at observed
+1.02 GHz show 2.69% less emulation time and 2.56% more throughput in the selected
+gameplay window. Adventure Island 0.1.7 is promoted locally and uploaded to the
+development entry. This is a separate shared performance contribution with no
+title or Switch frontend dependency.
+
+[Scripted gameplay profiling](GAMEPLAY_PROFILING.md) is isolated in
+`nesrecomp-switch-gameplay-replay.patch` after the preceding sprite-benchmark
+state. It connects Switch to the existing replay API, adds optional caller-owned
+RomFS assets and configurable warm-up, and streams sampled reports without
+altering guest state. Regular/profiled native controller fixtures match
+headless execution; six console runs match their desktop final states. The
+profiled FPS is explicitly separate from baseline performance. All engine
+changes are also in the cumulative patch; source snapshots identify the
+as-built experiments. Title input routes and asset staging stay in the workspace.
+
+The opt-in [portable/NEON console experiment](SPRITE_AB.md) adds a neutral-input
+benchmark mode to the shared Switch frontend. It discards a fixed 300-frame
+warm-up, measures 600 frames, reports focus interruptions and computes final
+state hashes outside measured time. Two native SDL fixture runs reach identical
+states; both title routes match all 1,800 frame records and PCM/PNG output
+between portable and automatic kernels. Four isolated Switch packages build.
+Eight physical console runs complete the ABBA comparisons at observed 1.02 GHz,
+with identical states within each title. Explicit NEON reduces emulation time
+by 9.80% for Mario and 8.46% for Adventure Island on these demos; the existing
+automatic selection is retained. This qualifies the earlier kernel change
+without claiming a new speed fix. `nesrecomp-switch-sprite-benchmark.patch`
+applies after the preceding isolated audio-diagnostics patch; applying both to
+`56b9265` reconstructs the archived sprite-benchmark source snapshot. The cumulative patch
+also includes both. Build flags, sender and comparison orchestration stay in
+this workspace.
+
+The uncommitted [Switch audio diagnostic follow-up](AUDIO_DIAGNOSTICS.md) is
+isolated in `patches/nesrecomp-switch-audio-diagnostics.patch` against
+`56b926508dea5d86fd4f58801afb2dfe30560be5`, and included in the cumulative patch.
+It adds opt-in nxlink stdout logging while retaining the SD log, produced-audio
+duration/queue observations, and read-only platform/CPU-clock reporting. It
+changes no guest timing, renderer or playback policy. The native 1,900-frame
+no-save contract passes, and both game packages cross-build. Mario 0.2.6 has
+a successful live-console run showing audio starvation; Adventure Island
+0.1.4 also has a successful run at 24.86 FPS, with stable 1.02 GHz CPU and full
+application mode. Read-only clock reporting works on hardware. No speed fix or
+audio-quality fix is claimed from the instrumentation.
+
 The shared ARM sprite-kernel work (`8d2a8696ea31146fa4a3fced93795e36b36bb21a`) is isolated in
 `patches/nesrecomp-arm-sprite-kernels.patch` against
 `ccc34150f58f4e75f24cee03eb49fa187b27b29e`. It adds AArch64 NEON to the

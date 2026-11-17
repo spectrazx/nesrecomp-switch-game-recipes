@@ -1,0 +1,169 @@
+diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
+index 8732100..c644169 100644
+--- a/runner/cyc/cyc_host.c
++++ b/runner/cyc/cyc_host.c
+@@ -1273,7 +1273,7 @@ static int host_main(int argc, char **argv) {
+         }
+         else if (!strcmp(argv[i], "--hidden") || !strcmp(argv[i], "--uncapped") || !strcmp(argv[i], "--pause-unfocused")
+ #ifdef CYC_SWITCH
+-                 || !strcmp(argv[i], "--nxlink-log")
++                 || !strcmp(argv[i], "--nxlink-log") || !strcmp(argv[i], "--benchmark")
+ #endif
+         ) {
+ #if defined(CYC_WITH_SDL)
+diff --git a/runner/switch/host.c b/runner/switch/host.c
+index 90c14db..9214db3 100644
+--- a/runner/switch/host.c
++++ b/runner/switch/host.c
+@@ -37,6 +37,7 @@ static SDL_AudioDeviceID audio;
+ static bool ready, storage_failed, suspended;
+ static long exit_after = -1;
+ static bool uncapped;
++static bool benchmark;
+ static unsigned saves;
+ static bool network_log;
+ #ifdef __SWITCH__
+@@ -80,11 +81,33 @@ static void report_platform(void)
+         (unsigned)appletGetPerformanceMode(), cpu_hz, clock_result);
+ #endif
+ }
++static const char *sprite_kernel_name(void)
++{
++#if !NESRECOMP_PPU_HLE
++    return "unused";
++#elif defined(NESRECOMP_PPU_HLE_FORCE_PORTABLE)
++    return "portable";
++#elif defined(__aarch64__) && defined(__ARM_NEON)
++    return "neon";
++#elif defined(__x86_64__) || defined(_M_X64)
++    return "sse2";
++#else
++    return "portable";
++#endif
++}
+ typedef struct {
+     Uint64 frames, emulation, audio, present, sleep;
+     Uint64 source_samples, queued_bytes, queue_polls, queue_empty_polls;
+     Uint32 queue_min, queue_max;
+ } FrameTimings;
++static void add_totals(FrameTimings *total, const FrameTimings *part)
++{
++    total->frames += part->frames;
++    total->emulation += part->emulation;
++    total->audio += part->audio;
++    total->present += part->present;
++    total->source_samples += part->source_samples;
++}
+ #if NESRECOMP_CORE_PROFILER
+ static uint64_t profile_clock(void) { return (uint64_t)SDL_GetPerformanceCounter(); }
+ #endif
+@@ -205,6 +228,7 @@ void cyc_sdl_option(const char *name, const char *value)
+ {
+     if (!strcmp(name, "--exit-after")) exit_after = strtol(value, NULL, 10);
+     if (!strcmp(name, "--uncapped")) uncapped = true;
++    if (!strcmp(name, "--benchmark")) benchmark = true;
+ }
+ void cyc_sdl_present_out(const char *path, long every) { (void)path; (void)every; }
+ void cyc_sdl_image_path(const char *path) { (void)path; }
+@@ -348,6 +372,11 @@ int cyc_sdl_main(const char *title, int scale)
+     runner_log("Region=%s target_fps=%.3f core_profiler=%s\n",
+         cyc_region() == CYC_REGION_PAL ? "PAL" : "NTSC", 1.0 / cyc_host_frame_seconds(),
+         NESRECOMP_CORE_PROFILER ? "sampled" : "off");
++    runner_log("Sprite_kernel=%s benchmark=%u warmup_frames=%u\n", sprite_kernel_name(),
++        benchmark, benchmark ? 300u : 0u);
++    if (benchmark && (CYC_SWITCH_SAVES || exit_after <= 300 || NESRECOMP_CORE_PROFILER)) {
++        fatal = "Benchmark requires saves/profiler OFF and --exit-after greater than 300."; goto cleanup;
++    }
+ #if NESRECOMP_CORE_PROFILER
+     cyc_profiler_set_clock(profile_clock);
+ #endif
+@@ -355,6 +384,9 @@ int cyc_sdl_main(const char *title, int scale)
+     Uint64 started = SDL_GetPerformanceCounter(), checkpoint = started, frames = 0, dropped = 0;
+     Uint64 report_at = started;
+     FrameTimings timings = {0};
++    FrameTimings measured = {0};
++    Uint64 benchmark_started = 0, benchmark_ended = 0;
++    unsigned benchmark_interruptions = 0;
+     while (running) {
+ #ifdef __SWITCH__
+         if (!appletMainLoop()) break;
+@@ -365,6 +397,7 @@ int cyc_sdl_main(const char *title, int scale)
+             if (event.type == SDL_APP_WILLENTERBACKGROUND ||
+                 (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)) {
+                 save_to(AUTO_PATH); suspended = true;
++                if (benchmark && frames >= 300) ++benchmark_interruptions;
+                 SDL_ClearQueuedAudio(audio); SDL_AudioStreamClear(stream);
+                 SDL_PauseAudioDevice(audio, 1);
+             }
+@@ -391,7 +424,7 @@ int cyc_sdl_main(const char *title, int scale)
+         if (pad && SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
+             SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) &&
+             SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) break;
+-        uint8_t input[2] = {buttons(pad), 0};
++        uint8_t input[2] = {benchmark ? 0 : buttons(pad), 0};
+         cyc_session_logical_input(input, 2); cyc_session_input(input);
+         cyc_set_controller(0, input[0]); cyc_set_controller(1, 0);
+         Uint64 stage = SDL_GetPerformanceCounter();
+@@ -437,7 +470,15 @@ int cyc_sdl_main(const char *title, int scale)
+         SDL_RenderPresent(renderer);
+         Uint64 now = SDL_GetPerformanceCounter();
+         timings.present += now - stage;
+-        if (now - report_at >= frequency * 5) {
++        benchmark_ended = now;
++        if (benchmark && frames == 300) {
++            /* A fixed emulated warm-up length, independent of host speed. */
++            memset(&timings, 0, sizeof(timings));
++            report_at = benchmark_started = now;
++            runner_log("benchmark_warmup_complete frames=300 input=neutral\n");
++        }
++        if (now - report_at >= frequency * 5 && (!benchmark || frames > 300)) {
++            if (benchmark) add_totals(&measured, &timings);
+             report_timings(&timings, now - report_at, frequency, bytes_per_second);
+             memset(&timings, 0, sizeof(timings)); report_at = now;
+         }
+@@ -458,6 +499,22 @@ int cyc_sdl_main(const char *title, int scale)
+     }
+     if (!fatal && !storage_failed && !save_to(AUTO_PATH)) storage_failed = true;
+     if (storage_failed) fatal = "Could not save progress to the SD card. See runtime.log.";
++    if (benchmark && benchmark_started && frames > 300) {
++        add_totals(&measured, &timings);
++        double seconds = (double)(benchmark_ended - benchmark_started) / frequency;
++        double per_frame = 1000.0 / (double)frequency / (double)measured.frames;
++        runner_log("benchmark kernel=%s frames=%llu warmup_frames=300 total_frames=%llu "
++                   "seconds=%.6f fps=%.3f emulation_ms=%.6f audio_ms=%.6f present_ms=%.6f "
++                   "audio_supply=%.6f interruptions=%u complete=%u\n",
++            sprite_kernel_name(), (unsigned long long)measured.frames, (unsigned long long)frames,
++            seconds, measured.frames / seconds, measured.emulation * per_frame,
++            measured.audio * per_frame, measured.present * per_frame,
++            (double)measured.source_samples / 48000.0 / seconds, benchmark_interruptions,
++            !fatal && !benchmark_interruptions && frames == (Uint64)exit_after);
++        /* Outside measured time; no per-frame hashing disturbs the benchmark. */
++        runner_log("benchmark_state mem=%016llX hw=%016llX\n",
++            (unsigned long long)cyc_mem_state_hash(), (unsigned long long)cyc_hw_state_hash());
++    }
+     report_timings(&timings, SDL_GetPerformanceCounter() - report_at, frequency, bytes_per_second);
+     runner_log("frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
+         (unsigned long long)frames, (double)(SDL_GetPerformanceCounter() - started) / frequency,
+diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
+index 1aa32ff..ae2ecec 100644
+--- a/tools/cyc/test_switch_host.py
++++ b/tools/cyc/test_switch_host.py
+@@ -109,6 +109,18 @@ endif()
+         assert 'queue_empty_polls=' in log and 'source_rate=48000' in log, log
+         assert save_dir.read_text() == 'not a directory'
+         save_dir.unlink(); parked.rename(save_dir)
++        # Repeated neutral-input benchmark runs must cover exactly 600 frames
++        # after the same 300-frame warm-up and reach identical machine state.
++        states = []
++        for attempt in range(2):
++            run([exe, '--benchmark', '--exit-after', '900', '--uncapped'],
++                f'benchmark-{attempt}', env=env)
++            benchmark_log = (data / 'runtime.log').read_text()
++            assert 'warmup_frames=300 total_frames=900' in benchmark_log, benchmark_log
++            assert 'frames=600 warmup_frames=300' in benchmark_log, benchmark_log
++            assert 'interruptions=0 complete=1' in benchmark_log, benchmark_log
++            states.append(re.search(r'benchmark_state mem=([0-9A-F]+) hw=([0-9A-F]+)', benchmark_log).groups())
++        assert states[0] == states[1], states
+         print('Switch no-save host: ignored old state and invalid save directory; 1900 paced frames passed without checkpoint or exit saves')
+         print(f'Prepared cross-build source: {source}')
+         return

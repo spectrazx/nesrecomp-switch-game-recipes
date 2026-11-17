@@ -1,5 +1,98 @@
 # NESRecomp Switch prototype — 2026-11-13
 
+Mario **0.2.11 is uploaded and measured**: the six-leg comparison reaches
+**66.62 FPS uncapped** with grouped sprite fetches, versus **62.72 FPS** for
+the 0.2.10 policy. All states match desktop at observed 1.02 GHz. This exceeds
+the original 60.099 FPS target in the selected gameplay window. Normal paced
+play and music listening remain to be checked. See
+[the console evidence](SPRITE_FETCH_JOBS.md#physical-switch-result).
+
+New [grouped sprite-fetch candidate](SPRITE_FETCH_JOBS.md): Mario **0.2.11**
+saves another **8.13% desktop CPU** over 0.2.10. A direct comparison against
+rebuilt 0.2.9 engine source measures **26.13% less CPU** for the combined
+changes. HLE/LLE three-path sprite-fetch checks, NTSC/PAL raster contracts,
+both games' 1,800-frame output comparisons, Mario's demo and the no-save SDL
+contract pass. Switch FPS and live audio remain unmeasured for this candidate;
+the last measured console Mario remains 0.2.9 at 47.93 FPS in gameplay. The
+verified 0.2.11 SDK artifact is now the local package/version; 0.2.9 is backed
+up and the console is unchanged.
+
+New [NTSC sprite-fetch candidate](MARIO_SPRITE_FETCH.md): Mario **0.2.10**
+reduces desktop process CPU by **18.93%** while preserving both games' 1,800
+raw frames, audio and hardware dumps. HLE/LLE sprite-fetch, existing NTSC/PAL
+raster and no-save SDL checks pass. The Switch package is built; hardware
+comparison and listening verification are pending. Mario's original NTSC
+target is **60.099 FPS**. Adventure Island's moving scan lines remain open.
+
+Latest [PAL eight-pixel rendering](PAL_RASTER_BATCHING.md): Adventure Island
+**0.1.9** completes six console gameplay passes, improving **27.85 → 36.01 FPS**
+(**29.29%**) with **23.56%** less emulation time. All final states match desktop
+at 1.02 GHz. The 2,560 PAL/4,096 NTSC raster cases, both games' 1,800-frame
+pictures/audio/state comparisons and 903 Mesen pictures pass. The measured
+package is now the normal local build/version and uploaded development entry.
+Saving remains OFF; 50.007 FPS and real-time audio remain unmet.
+
+Latest [PAL native intervals](PAL_NATIVE_INTERVALS.md): Adventure Island
+**0.1.8** completes its six-leg console gameplay comparison, improving
+**24.87 → 28.21 FPS** (**13.43%**) with **12.21%** less emulation time. All six
+states match desktop at observed 1.02 GHz. Five-phase HLE/LLE timing tests,
+both games' 1,800-frame pictures/audio/state comparisons and 903 independent
+Mesen pictures pass. The measured build is now the normal local package and
+uploaded development entry. Saving remains OFF; the 50.007 FPS target and
+real-time audio remain unmet.
+
+Latest [held IRQ batching and automatic comparisons](MASKED_IRQ_BATCHING.md):
+Mario **0.2.9** completes two six-leg console suites. The selected demo window
+improves **27.87 → 48.70 FPS** (+74.73%), with 44.53% less emulation time.
+Active gameplay remains **47.93 FPS**, matching the reference policy within
+noise. All 12 final states match desktop at observed 1.02 GHz; saves remain
+OFF. The measured NRO is now the normal local package and uploaded development
+entry. The 60.099 FPS target and full real-time audio remain unmet. Adventure
+Island advances to **0.1.8** in the PAL/CNROM comparison above.
+
+New [performance strategy investigation](PERFORMANCE_STRATEGY.md) (2026-11-15):
+Mario's neutral run uses zero batched cycles; its measured gameplay window
+batches about 68%. Isolated instrumentation finds an asserted but CPU-masked
+IRQ line in 99.85% of neutral batching queries, plus APU eligibility rejection
+in every query. Audio and final hardware dumps match the uninstrumented build.
+This identifies a concrete shared-core optimization target; no new speed gain
+is claimed. The local netload address is now **192.168.1.224**.
+
+Latest [shared PAL render-tail optimization](PAL_PPU_TAIL.md): Adventure Island
+**0.1.7** completes four BAAB console runs, improving the selected gameplay
+window from **24.70 to 25.34 FPS** (**2.56%**), with **2.69%** less emulation
+time. Every final state matches desktop at observed 1.02 GHz. Timing contracts,
+both games' 1,800-frame traces/raw pictures/audio/save continuation, and 903
+independent PAL reference pictures pass. The measured build is the current
+local package and uploaded development entry. Audio supply is still about half
+of real time; the reported flicker remains unresolved. Mario remains **0.2.8**.
+
+Latest [scripted gameplay and profiling](GAMEPLAY_PROFILING.md): Mario **0.2.8**
+measures **48.21 FPS** in active World 1-1 versus 28.18 in its demo, using the
+same binary/clock. Adventure Island **0.1.6** measures **24.71 FPS** in gameplay
+versus 25.03 in the demo. All six final console states match desktop references.
+Instrumented PPU costs are about 16.67 ms / 35.98 ms per frame respectively;
+PAL/CNROM lacks the existing native-interval paths. These releases add replay
+measurement, not a speed or audio fix. Normal packages retain NEON with saving,
+profiling and replay disabled by default.
+
+Newest follow-up: [controlled portable/NEON console comparison](SPRITE_AB.md).
+Mario **0.2.7** and Adventure Island **0.1.5** complete eight ABBA console runs
+with fixed neutral input, 300 warm-up and 600 measured frames. Explicit NEON
+reduces emulation time by **9.80% / 8.46%** respectively, with matching final
+states and observed 1.02 GHz CPU. Mean NEON throughput is **28.04 / 25.35 FPS**
+on these demo routes. Existing NEON selection is retained; these versions add
+measurement tooling and do not claim a new speed/audio fix. Normal local
+packages contain NEON, saving/profiling OFF and benchmark behavior opt-in.
+
+Latest follow-up (2026-11-14): [live audio and clock diagnostics](AUDIO_DIAGNOSTICS.md).
+Network uploads and console logs are physically verified for Mario **0.2.6**
+and Adventure Island **0.1.4**. The runs measured 28.55/24.86 FPS respectively
+and sustained audio supply below half of real time. Adventure Island confirms
+full application mode, handheld operation and a stable 1.02 GHz CPU. Mario's
+earlier 46.69 FPS run is not a controlled comparison with this test; no cause
+for that difference or new speed/audio fix is claimed. Saving remains OFF.
+
 Current follow-up: [0.2.4/0.1.2 measurements and pixel investigation](HARDWARE_0.2.4.md).
 The PAL change produced 22.98 FPS on Switch (22.48% more throughput); Mario
 remains at 46.69 FPS. The reported visual glitches are not reproduced by the

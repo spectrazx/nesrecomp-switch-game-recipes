@@ -11,6 +11,10 @@ set(NESRECOMP_ROM "" CACHE FILEPATH "User-supplied ROM")
 set(NESRECOMP_HOST_COMPILER "" CACHE FILEPATH "Runnable code generator")
 set(GAME_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/.." CACHE PATH "Packaged NRO directory")
 set(GAME_PPU_OVERRIDE "" CACHE STRING "Explicit PPU override for comparisons")
+set(GAME_SPRITE_KERNEL auto CACHE STRING "auto or portable HLE sprite kernels")
+if(NOT GAME_SPRITE_KERNEL MATCHES "^(auto|portable)$")
+    message(FATAL_ERROR "Unknown sprite kernel: ${GAME_SPRITE_KERNEL}")
+endif()
 set(default_variant baseline)
 if(NINTENDO_SWITCH)
     set(default_variant optimized)
@@ -56,6 +60,9 @@ nesrecomp_add_cycle_game(nes_game ROM "${NESRECOMP_ROM}" GAME_CONFIG "${GAME_MOD
     HARDWARE_PROFILE "${GAME_HARDWARE_PROFILE}" OPTIMIZATION_MODULES ${GAME_OPTIMIZATION_MODULES}
     REGION "${GAME_REGION}"
     ${host_options})
+if(GAME_SPRITE_KERNEL STREQUAL "portable")
+    target_compile_definitions(nes_game PRIVATE NESRECOMP_PPU_HLE_FORCE_PORTABLE=1)
+endif()
 if(NOT NINTENDO_SWITCH AND GAME_VARIANT STREQUAL "optimized")
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error LANGUAGES C)
@@ -65,6 +72,7 @@ if(NOT NINTENDO_SWITCH AND GAME_VARIANT STREQUAL "optimized")
     set_property(TARGET nes_game PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 if(NINTENDO_SWITCH)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-region.txt" "${GAME_REGION}\n")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-artifact.txt" "${GAME_ARTIFACT}.nro\n")
     add_custom_target(package_game ALL
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${GAME_OUTPUT_DIR}"

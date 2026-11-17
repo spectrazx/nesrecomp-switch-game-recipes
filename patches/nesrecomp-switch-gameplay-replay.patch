@@ -1,0 +1,255 @@
+diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
+index c644169..af51604 100644
+--- a/runner/cyc/cyc_host.c
++++ b/runner/cyc/cyc_host.c
+@@ -1265,6 +1265,9 @@ static int host_main(int argc, char **argv) {
+         else if (!strcmp(argv[i], "--replay-exact")) replay_exact = true, headless = true;
+         else if (!strcmp(argv[i], "--mods-root") && i + 1 < argc) mods_root = argv[++i];
+         else if ((!strcmp(argv[i], "--virtual-pad") || !strcmp(argv[i], "--exit-after") ||
++#ifdef CYC_SWITCH
++                  !strcmp(argv[i], "--benchmark-warmup") ||
++#endif
+                   !strcmp(argv[i], "--config") || !strcmp(argv[i], "--tcp")) && i + 1 < argc) {
+ #if defined(CYC_WITH_SDL)
+             cyc_sdl_option(argv[i], argv[i + 1]);
+diff --git a/runner/switch/host.c b/runner/switch/host.c
+index 9214db3..a9806fe 100644
+--- a/runner/switch/host.c
++++ b/runner/switch/host.c
+@@ -38,11 +38,14 @@ static bool ready, storage_failed, suspended;
+ static long exit_after = -1;
+ static bool uncapped;
+ static bool benchmark;
++static long benchmark_warmup = 300;
++static const char *replay_path;
+ static unsigned saves;
+ static bool network_log;
+ #ifdef __SWITCH__
+ static bool sockets_ready;
+ static int log_socket = -1;
++static bool romfs_ready;
+ #endif
+ 
+ /* Network output is opt-in and infrequent. Keep stderr's SD log intact. */
+@@ -129,7 +132,16 @@ static void report_timings(const FrameTimings *t, Uint64 elapsed, Uint64 frequen
+         t->queue_min * byte_ms, t->queue_max * byte_ms);
+     report_platform();
+ #if NESRECOMP_CORE_PROFILER
+-    cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
++    if (network_log) {
++        /* Reporting resets the sampler. Snapshot only host diagnostic state
++         * so both destinations receive the same report, with one final reset. */
++        CycProfileBin snapshot[CYC_PROFILE_COUNT];
++        memcpy(snapshot, cyc_profile_bins, sizeof(snapshot));
++        cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
++        memcpy(cyc_profile_bins, snapshot, sizeof(snapshot));
++        cyc_profiler_report(stdout, t->frames, frequency, t->emulation);
++        fflush(stdout);
++    } else cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
+ #endif
+ }
+ #if defined(__SWITCH__) && CYC_SWITCH_SAVES
+@@ -179,8 +191,10 @@ int cyc_switch_init(int argc, char **argv)
+ {
+     bool requested = false;
+     network_log = false;
+-    for (int i = 1; i < argc; ++i)
++    for (int i = 1; i < argc; ++i) {
+         if (!strcmp(argv[i], "--nxlink-log")) requested = true;
++        if (!strcmp(argv[i], "--window-input") && i + 1 < argc) replay_path = argv[++i];
++    }
+     if (!mkdirs(CYC_SWITCH_SAVES ? CYC_SWITCH_GAME_DIR "/saves" : CYC_SWITCH_GAME_DIR)) {
+         cyc_sdl_error_box("Storage unavailable", "Cannot create the game's directory on the SD card.");
+         return 0;
+@@ -209,6 +223,7 @@ void cyc_switch_shutdown(void)
+ {
+     fflush(stderr);
+ #ifdef __SWITCH__
++    if (romfs_ready) { romfsExit(); romfs_ready = false; }
+     if (log_socket >= 0) { fflush(stdout); close(log_socket); log_socket = -1; }
+     if (sockets_ready) { socketExit(); sockets_ready = false; }
+ #endif
+@@ -222,6 +237,16 @@ int cyc_sdl_prelaunch(const char **rom_path, const char *bios, NesFdsHleAsk *hle
+     *rom_path = ROM_PATH;
+     *hle = NES_FDS_HLE_ASK_NONE;
+     *saved_bios = NULL;
++#ifdef __SWITCH__
++    if (replay_path && !strncmp(replay_path, "romfs:/", 7) && !romfs_ready) {
++        Result rc = romfsInit();
++        if (R_FAILED(rc)) {
++            runner_log("Cannot mount input assets: 0x%08X\n", rc);
++            return 2;
++        }
++        romfs_ready = true;
++    }
++#endif
+     return 0;
+ }
+ void cyc_sdl_option(const char *name, const char *value)
+@@ -229,6 +254,11 @@ void cyc_sdl_option(const char *name, const char *value)
+     if (!strcmp(name, "--exit-after")) exit_after = strtol(value, NULL, 10);
+     if (!strcmp(name, "--uncapped")) uncapped = true;
+     if (!strcmp(name, "--benchmark")) benchmark = true;
++    if (!strcmp(name, "--benchmark-warmup")) {
++        char *end;
++        long frames = strtol(value, &end, 10);
++        benchmark_warmup = *value && !*end ? frames : -1;
++    }
+ }
+ void cyc_sdl_present_out(const char *path, long every) { (void)path; (void)every; }
+ void cyc_sdl_image_path(const char *path) { (void)path; }
+@@ -372,10 +402,10 @@ int cyc_sdl_main(const char *title, int scale)
+     runner_log("Region=%s target_fps=%.3f core_profiler=%s\n",
+         cyc_region() == CYC_REGION_PAL ? "PAL" : "NTSC", 1.0 / cyc_host_frame_seconds(),
+         NESRECOMP_CORE_PROFILER ? "sampled" : "off");
+-    runner_log("Sprite_kernel=%s benchmark=%u warmup_frames=%u\n", sprite_kernel_name(),
+-        benchmark, benchmark ? 300u : 0u);
+-    if (benchmark && (CYC_SWITCH_SAVES || exit_after <= 300 || NESRECOMP_CORE_PROFILER)) {
+-        fatal = "Benchmark requires saves/profiler OFF and --exit-after greater than 300."; goto cleanup;
++    runner_log("Sprite_kernel=%s benchmark=%u warmup_frames=%ld input=%s\n", sprite_kernel_name(),
++        benchmark, benchmark ? benchmark_warmup : 0, replay_path ? "scripted" : benchmark ? "neutral" : "controller");
++    if (benchmark && (CYC_SWITCH_SAVES || benchmark_warmup < 1 || exit_after <= benchmark_warmup)) {
++        fatal = "Benchmark requires saves OFF and --exit-after greater than its positive warm-up."; goto cleanup;
+     }
+ #if NESRECOMP_CORE_PROFILER
+     cyc_profiler_set_clock(profile_clock);
+@@ -387,6 +417,7 @@ int cyc_sdl_main(const char *title, int scale)
+     FrameTimings measured = {0};
+     Uint64 benchmark_started = 0, benchmark_ended = 0;
+     unsigned benchmark_interruptions = 0;
++    Uint64 replay_frames = 0;
+     while (running) {
+ #ifdef __SWITCH__
+         if (!appletMainLoop()) break;
+@@ -397,7 +428,7 @@ int cyc_sdl_main(const char *title, int scale)
+             if (event.type == SDL_APP_WILLENTERBACKGROUND ||
+                 (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)) {
+                 save_to(AUTO_PATH); suspended = true;
+-                if (benchmark && frames >= 300) ++benchmark_interruptions;
++                if (benchmark && frames >= (Uint64)benchmark_warmup) ++benchmark_interruptions;
+                 SDL_ClearQueuedAudio(audio); SDL_AudioStreamClear(stream);
+                 SDL_PauseAudioDevice(audio, 1);
+             }
+@@ -425,8 +456,9 @@ int cyc_sdl_main(const char *title, int scale)
+             SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) &&
+             SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) break;
+         uint8_t input[2] = {benchmark ? 0 : buttons(pad), 0};
++        if (cyc_host_window_replay((long)frames, input, 2)) ++replay_frames;
+         cyc_session_logical_input(input, 2); cyc_session_input(input);
+-        cyc_set_controller(0, input[0]); cyc_set_controller(1, 0);
++        cyc_set_controller(0, input[0]); cyc_set_controller(1, input[1]);
+         Uint64 stage = SDL_GetPerformanceCounter();
+         cyc_session_frame_begin(); cyc_run_frame(); cyc_session_frame_end();
+         cyc_host_frame_done((long)cyc_ring_frame);
+@@ -471,13 +503,17 @@ int cyc_sdl_main(const char *title, int scale)
+         Uint64 now = SDL_GetPerformanceCounter();
+         timings.present += now - stage;
+         benchmark_ended = now;
+-        if (benchmark && frames == 300) {
++        if (benchmark && frames == (Uint64)benchmark_warmup) {
+             /* A fixed emulated warm-up length, independent of host speed. */
+             memset(&timings, 0, sizeof(timings));
+             report_at = benchmark_started = now;
+-            runner_log("benchmark_warmup_complete frames=300 input=neutral\n");
++            runner_log("benchmark_warmup_complete frames=%ld input=%s\n", benchmark_warmup,
++                replay_path ? "scripted" : "neutral");
++#if NESRECOMP_CORE_PROFILER
++            cyc_profiler_reset();
++#endif
+         }
+-        if (now - report_at >= frequency * 5 && (!benchmark || frames > 300)) {
++        if (now - report_at >= frequency * 5 && (!benchmark || frames > (Uint64)benchmark_warmup)) {
+             if (benchmark) add_totals(&measured, &timings);
+             report_timings(&timings, now - report_at, frequency, bytes_per_second);
+             memset(&timings, 0, sizeof(timings)); report_at = now;
+@@ -499,18 +535,19 @@ int cyc_sdl_main(const char *title, int scale)
+     }
+     if (!fatal && !storage_failed && !save_to(AUTO_PATH)) storage_failed = true;
+     if (storage_failed) fatal = "Could not save progress to the SD card. See runtime.log.";
+-    if (benchmark && benchmark_started && frames > 300) {
++    if (benchmark && benchmark_started && frames > (Uint64)benchmark_warmup) {
+         add_totals(&measured, &timings);
+         double seconds = (double)(benchmark_ended - benchmark_started) / frequency;
+         double per_frame = 1000.0 / (double)frequency / (double)measured.frames;
+-        runner_log("benchmark kernel=%s frames=%llu warmup_frames=300 total_frames=%llu "
++        runner_log("benchmark kernel=%s frames=%llu warmup_frames=%ld total_frames=%llu "
+                    "seconds=%.6f fps=%.3f emulation_ms=%.6f audio_ms=%.6f present_ms=%.6f "
+-                   "audio_supply=%.6f interruptions=%u complete=%u\n",
+-            sprite_kernel_name(), (unsigned long long)measured.frames, (unsigned long long)frames,
++                   "audio_supply=%.6f interruptions=%u complete=%u profiled=%u input=%s replay_frames=%llu\n",
++            sprite_kernel_name(), (unsigned long long)measured.frames, benchmark_warmup, (unsigned long long)frames,
+             seconds, measured.frames / seconds, measured.emulation * per_frame,
+             measured.audio * per_frame, measured.present * per_frame,
+             (double)measured.source_samples / 48000.0 / seconds, benchmark_interruptions,
+-            !fatal && !benchmark_interruptions && frames == (Uint64)exit_after);
++            !fatal && !benchmark_interruptions && frames == (Uint64)exit_after && (!replay_path || replay_frames == frames),
++            NESRECOMP_CORE_PROFILER ? 1u : 0u, replay_path ? "scripted" : "neutral", (unsigned long long)replay_frames);
+         /* Outside measured time; no per-frame hashing disturbs the benchmark. */
+         runner_log("benchmark_state mem=%016llX hw=%016llX\n",
+             (unsigned long long)cyc_mem_state_hash(), (unsigned long long)cyc_hw_state_hash());
+diff --git a/runner/switch/switch.cmake b/runner/switch/switch.cmake
+index a4d342e..3a3f9a7 100644
+--- a/runner/switch/switch.cmake
++++ b/runner/switch/switch.cmake
+@@ -10,6 +10,7 @@ set(NESRECOMP_SWITCH_AUTHOR "NESRecomp contributors" CACHE STRING "NACP author")
+ set(NESRECOMP_SWITCH_VERSION "0.2.0" CACHE STRING "NACP version")
+ option(NESRECOMP_SWITCH_SAVES "Enable experimental SD save/load and automatic resume" OFF)
+ option(NESRECOMP_SWITCH_LTO "Optimize across the Switch runtime's translation units" ON)
++set(NESRECOMP_SWITCH_ROMFS_ROOT "" CACHE PATH "Optional caller-owned read-only assets")
+ 
+ function(nesrecomp_cyc_enable_switch target)
+     if(NOT NESRECOMP_SWITCH_GAME_DIR MATCHES "^sdmc:/[A-Za-z0-9_/-]+$" OR
+@@ -47,5 +48,15 @@ function(nesrecomp_cyc_enable_switch target)
+     set(nacp "${CMAKE_CURRENT_BINARY_DIR}/${target}.nacp")
+     nx_generate_nacp(OUTPUT "${nacp}" NAME "${NESRECOMP_SWITCH_TITLE}"
+         AUTHOR "${NESRECOMP_SWITCH_AUTHOR}" VERSION "${NESRECOMP_SWITCH_VERSION}")
+-    nx_create_nro(${target} NACP "${nacp}")
++    if(NESRECOMP_SWITCH_ROMFS_ROOT)
++        if(NOT IS_DIRECTORY "${NESRECOMP_SWITCH_ROMFS_ROOT}")
++            message(FATAL_ERROR "Switch ROMFS root must be an existing directory")
++        endif()
++        file(GLOB_RECURSE romfs_inputs CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE "${NESRECOMP_SWITCH_ROMFS_ROOT}/*")
++        set(nro "${CMAKE_CURRENT_BINARY_DIR}/${target}.nro")
++        nx_create_nro(${target} OUTPUT "${nro}" NACP "${nacp}" ROMFS "${NESRECOMP_SWITCH_ROMFS_ROOT}")
++        add_custom_command(OUTPUT "${nro}" APPEND DEPENDS ${romfs_inputs})
++    else()
++        nx_create_nro(${target} NACP "${nacp}")
++    endif()
+ endfunction()
+diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
+index ae2ecec..949c9ad 100644
+--- a/tools/cyc/test_switch_host.py
++++ b/tools/cyc/test_switch_host.py
+@@ -27,7 +27,11 @@ def main():
+     # and a fixed loop. No commercial ROM, code, graphics or audio assets.
+     program = bytes.fromhex('78 d8 a2 ff 9a a9 00 8d 00 20 8d 01 20 '
+                             'a9 3f 8d 06 20 a9 00 8d 06 20 a9 21 8d 07 20 '
+-                            'a9 08 8d 01 20 e6 00 4c 21 80')
++                            'a9 08 8d 01 20 '
++                            # Poll all eight NES controller bits into RAM $01.
++                            'a9 01 8d 16 40 a9 00 8d 16 40 a2 08 '
++                            'ad 16 40 4a 66 01 ca d0 f7 '
++                            'e6 00 4c 21 80')
+     prg = bytearray([0xea]) * 32768
+     prg[:len(program)] = program
+     prg[-6:] = bytes.fromhex('00 80 00 80 00 80')
+@@ -121,6 +125,19 @@ endif()
+             assert 'interruptions=0 complete=1' in benchmark_log, benchmark_log
+             states.append(re.search(r'benchmark_state mem=([0-9A-F]+) hw=([0-9A-F]+)', benchmark_log).groups())
+         assert states[0] == states[1], states
++        route = out / 'input.txt'
++        route.write_text('0 START\n120 -\n400 RIGHT+B\n700 RIGHT+A\n')
++        run([exe, rom, '--input', route, '--frames', '900', '--hash-out', out / 'route-hashes.txt',
++             '--no-save'], 'route-headless', env=env)
++        expected = dict(re.findall(r'(mem|hw)=([0-9A-F]+)', (out / 'route-hashes.txt').read_text().splitlines()[-1]))
++        run([exe, '--window-input', route, '--benchmark', '--benchmark-warmup', '600',
++             '--exit-after', '900', '--uncapped'], 'route-window', env=env)
++        replay_log = (data / 'runtime.log').read_text()
++        actual = re.search(r'benchmark_state mem=([0-9A-F]+) hw=([0-9A-F]+)', replay_log).groups()
++        assert actual == (expected['mem'], expected['hw']), (actual, expected)
++        assert actual != states[0], 'Fixture route must affect observable machine state'
++        assert 'frames=300 warmup_frames=600 total_frames=900' in replay_log, replay_log
++        assert 'input=scripted replay_frames=900' in replay_log and 'complete=1' in replay_log, replay_log
+         print('Switch no-save host: ignored old state and invalid save directory; 1900 paced frames passed without checkpoint or exit saves')
+         print(f'Prepared cross-build source: {source}')
+         return

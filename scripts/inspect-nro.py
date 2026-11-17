@@ -7,6 +7,7 @@ import struct
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument('path', type=Path)
 ap.add_argument('--expect-version', help='Reject a stale or incorrectly versioned package')
+ap.add_argument('--expect-romfs', action='store_true', help='Require a bounded nonempty RomFS asset')
 args = ap.parse_args()
 data = args.path.read_bytes()
 assert len(data) >= 0x80 and data[0x10:0x14] == b'NRO0', 'Missing NRO header'
@@ -25,4 +26,8 @@ version = nacp[0x3060:0x3070].split(b'\0')[0].decode('utf-8')
 assert version, 'Empty application version'
 if args.expect_version:
     assert version == args.expect_version, f'Expected version {args.expect_version}, received {version}'
+romfs_offset, romfs_length = struct.unpack_from('<QQ', data, size + 0x28)
+if args.expect_romfs:
+    assert romfs_length >= 0x50 and size + romfs_offset + romfs_length <= len(data), 'Missing or invalid RomFS asset'
+    assert struct.unpack_from('<Q', data, size + romfs_offset)[0] == 0x50, 'Invalid RomFS header'
 print(f'{args.path}: {len(data)} bytes; NRO sections and NACP verified; title={title!r}; version={version}')

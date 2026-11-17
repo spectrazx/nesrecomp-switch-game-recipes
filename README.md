@@ -7,6 +7,18 @@ Workspace for a Nintendo Switch 1 NESRecomp homebrew runner.
 - [Switch prototype, test results, reproduction, and remaining work](docs/PORT_STATUS.md)
 - [Core, Switch frontend and game module architecture](docs/ARCHITECTURE.md)
 - [Changes and validation for future upstream PRs](docs/UPSTREAM.md)
+- [Upstream Mario comparison and measurements](docs/UPSTREAM_COMPARISON.md)
+- [Faster iteration: Wi-Fi transfer, USB and Mac benchmarks](docs/ITERATION.md)
+- [pNES / Nestopia architecture reference](docs/PNES_REFERENCE.md)
+- [Controlled Switch portable/NEON sprite comparison](docs/SPRITE_AB.md)
+- [Repeatable gameplay measurements and PPU profiling](docs/GAMEPLAY_PROFILING.md)
+- [Shared PAL rendering optimization and validation](docs/PAL_PPU_TAIL.md)
+- [Larger performance opportunities and faster experiments](docs/PERFORMANCE_STRATEGY.md)
+- [PAL eight-pixel rendering](docs/PAL_RASTER_BATCHING.md)
+- [Mario sprite-fetch optimization and audio target](docs/MARIO_SPRITE_FETCH.md)
+- [Grouped sprite fetches: second Mario optimization round](docs/SPRITE_FETCH_JOBS.md)
+- [PAL native intervals and console comparison](docs/PAL_NATIVE_INTERVALS.md)
+- [Held IRQ batching and automatic Switch comparisons](docs/MASKED_IRQ_BATCHING.md)
 
 ROMs, generated game code, build artifacts, and local installation records are
 excluded from Git. The initial Switch runner builds both an original test
@@ -76,6 +88,17 @@ Eject the SD through Finder when finished, or run `diskutil eject /Volumes/Untit
 On the Switch, launch **Super Mario Bros. Recomp** through the homebrew menu.
 Plus starts the game; D-pad / left stick and A/B control it.
 L + R + Plus exits. ZL/ZR save/load shortcuts are disabled in this build.
+
+For development, the existing build can also be sent and launched over Wi-Fi:
+open hbmenu, press **Y** for NetLoader, then run
+`NESRECOMP_SWITCH_IP=192.168.1.123 mise run netload` with the Switch's actual IP.
+This checks the local package and sends a separate `*-dev.nro`; its ROM must
+already be on SD. Use `netload-adventure` for the other game. These tasks use
+the existing SDK container when native nxlink is absent and retain the current
+version. Mario upload/launch and opt-in live diagnostic logging are now
+confirmed on the physical console. Set `NESRECOMP_SWITCH_IP` to your console's
+current address and open NetLoader before sending.
+[Full instructions and USB alternatives](docs/ITERATION.md).
 
 ## Adventure Island Classic (Europe)
 

@@ -1,0 +1,323 @@
+diff --git a/runner/cyc/CMakeLists.txt b/runner/cyc/CMakeLists.txt
+index bb66793..d76e924 100644
+--- a/runner/cyc/CMakeLists.txt
++++ b/runner/cyc/CMakeLists.txt
+@@ -774,3 +774,9 @@ add_test(NAME cyc_pal_raster_intervals COMMAND ${Python3_EXECUTABLE}
+     --probe $<TARGET_FILE:cyc_raster_interval_probe> --pal
+     --out ${CMAKE_CURRENT_BINARY_DIR}/pal_raster_interval_results)
+ set_tests_properties(cyc_pal_raster_intervals PROPERTIES TIMEOUT 600)
++
++add_test(NAME cyc_sprite_fetch_intervals COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_raster_intervals.py
++    --probe $<TARGET_FILE:cyc_raster_interval_probe> --sprite-fetch
++    --out ${CMAKE_CURRENT_BINARY_DIR}/sprite_fetch_interval_results)
++set_tests_properties(cyc_sprite_fetch_intervals PROPERTIES TIMEOUT 600)
+diff --git a/runner/cyc/hw.h b/runner/cyc/hw.h
+index bda814f..bc043ce 100644
+--- a/runner/cyc/hw.h
++++ b/runner/cyc/hw.h
+@@ -107,6 +107,8 @@ bool hw_native_prepare(void);
+ void hw_native_set_masked_irq(bool enabled);
+ void hw_native_set_pal_intervals(bool enabled);
+ void hw_native_set_pal_raster(bool enabled);
++void hw_native_set_sprite_fetch(bool enabled);
++extern uint64_t ppu_native_fetch_cycles;
+ 
+ static inline bool hw_native_reserve(void)
+ {
+diff --git a/runner/cyc/hw_ppu.c b/runner/cyc/hw_ppu.c
+index ef9a14a..da494f0 100644
+--- a/runner/cyc/hw_ppu.c
++++ b/runner/cyc/hw_ppu.c
+@@ -1031,8 +1031,16 @@ HW_ALWAYS_INLINE void half_dot_status(void)
+  * state machine) clears it. The general path runs otherwise, and
+  * native/--interp-only comparisons cover both. */
+ 
+-enum { DOT_UNKNOWN, DOT_BLANK, DOT_GENERAL, DOT_RENDER, DOT_IDLE };
+-static uint8_t dot_kind;
++enum { DOT_UNKNOWN, DOT_BLANK, DOT_GENERAL, DOT_RENDER, DOT_IDLE, DOT_SPRITE };
++static uint8_t dot_kind;
++static bool sprite_fetch_enabled = true;
++uint64_t ppu_native_fetch_cycles;
++void hw_native_set_sprite_fetch(bool enabled)
++{
++    hw_native_flush();
++    sprite_fetch_enabled = enabled;
++    dot_kind = DOT_UNKNOWN;
++}
+ 
+ /* Nonvisible, settled dots have neither pixels nor VRAM/OAM fetches. Keep
+  * scanline/frame/status edges and register latch settling on the coupled
+@@ -1316,6 +1324,59 @@ static bool render_span_ready(void)
+              ppu.vset | ppu.vblank_pending) && ppu.vset_latch1;
+ }
+ 
++/* Visible scanlines after the final output pixel and horizontal scroll
++ * copy, before background prefetch. CPU register accesses invalidate this
++ * proof just as they do the visible render span. Pre-render vertical copies,
++ * PAL refresh, unsettled writes and data-port transactions remain general. */
++static bool sprite_fetch_ready(void)
++{
++    return sprite_fetch_enabled && !hw_pal() && ppu.scanline < 240 &&
++           ppu.dot >= 260 && ppu.dot < 320 && rendering() && sm_rest &&
++           ppu.render_count == 5 && ppu.eval_bg == ppu.show_bg &&
++           ppu.eval_spr == ppu.show_spr && ppu.instant_bg == ppu.show_bg &&
++           ppu.instant_spr == ppu.show_spr &&
++           !(ppu.skipped_dot | ppu.w2001_delay | ppu.w2001_oam_delay |
++             ppu.w2001_emph_delay | ppu.w2005_delay | ppu.w2006_delay |
++             ppu.oamc_disabled | ppu.oamc_disabled_now | ppu.oamc_pending |
++             ppu.palc_disabled | ppu.palc_v_left | ppu.read2002 |
++             ppu.vset | ppu.vblank_pending | ppu.oam2_reset) &&
++           ppu.vset_latch1;
++}
++
++static void sprite_fetch_dot(void)
++{
++    ++ppu.dot;
++    if (hw_zapper.port) ++hw_zapper.dots;
++    ppu.overflow_late = ppu.overflow;
++    ppu.blnk_latch = ppu.pal_enable = 0;
++    ppu.rd = ((ppu.dot - 1) & 1) != 0;
++    hw_cart_ppu_rd(ppu.rd != 0);
++    ppu.ale = !ppu.rd;
++    ppu.oam_latch = ppu.oam_buffer;
++    ppu.copy_v = 0;
++    eval_load();
++#ifdef NESRECOMP_CYCLE_HDPACK
++    cyc_hdpack_clock();
++#endif
++    if (cyc_background_enabled) {
++        cyc_background_pipe[3] = cyc_background_pipe[2];
++        cyc_background_pipe[2] = cyc_background_pipe[1];
++        cyc_background_pipe[1] = cyc_background_pipe[0];
++    }
++    ppu.color[3] = ppu.color[2];
++    ppu.color[2] = ppu.color[1];
++    ppu.color[1] = ppu.color[0];
++    io_bus_decay();
++}
++
++static void sprite_fetch_half_dot(void)
++{
++    if (ppu.commit) bg_commit();
++    ppu.oam_buffer = ppu.oam_buffer_in;
++    half_dot_status();
++    ppu.ale = ppu.wr = 0;
++}
++
+ static inline void render_span_prefix(void)
+ {
+     ++ppu.dot;
+@@ -1411,13 +1472,16 @@ void ppu_dot(void)
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+     } else if (dot_kind == DOT_RENDER && ppu.dot < 253) {
+         render_span_dot();
++    } else if (dot_kind == DOT_SPRITE && ppu.dot < 320) {
++        sprite_fetch_dot();
+ #endif
+     } else {
+         general_dot();
+         if (idle_span_ready()) dot_kind = DOT_IDLE;
+         else if (!rendering()) dot_kind = DOT_UNKNOWN;
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+-        else dot_kind = render_span_ready() ? DOT_RENDER : DOT_GENERAL;
++        else dot_kind = sprite_fetch_ready() ? DOT_SPRITE :
++                        render_span_ready() ? DOT_RENDER : DOT_GENERAL;
+ #endif
+     }
+     hw_cart_ppu_addr(ppu.vbus);
+@@ -1431,12 +1495,15 @@ void ppu_half_dot(void)
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+     } else if (dot_kind == DOT_RENDER) {
+         render_span_half_dot();
++    } else if (dot_kind == DOT_SPRITE) {
++        sprite_fetch_half_dot();
+ #endif
+     } else {
+         general_half_dot();
+         if (idle_span_ready()) dot_kind = DOT_IDLE;
+         else if (!rendering()) dot_kind = DOT_UNKNOWN;
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
++        else if (sprite_fetch_ready()) dot_kind = DOT_SPRITE;
+         else if (render_span_ready()) dot_kind = DOT_RENDER;
+ #endif
+     }
+@@ -1466,6 +1533,9 @@ unsigned ppu_native_interval_limit(void)
+         if (dot_kind != DOT_RENDER || ppu.dot >= 249) return 0;
+         return (5u * (249u - ppu.dot) + 4u - hw_region_timing.phase) / 16u;
+     }
++    if (dot_kind == DOT_SPRITE && !hw_cart.watch_ppu_addr &&
++        !hw_cart.m.pattern_pending && ppu.dot < 318)
++        return (320u - ppu.dot) / 3u;
+     if (dot_kind == DOT_IDLE && ppu.dot < 334)
+         return (337u - ppu.dot) / 3u;
+     /* MMC3 can clock an IRQ at the first pattern fetch after a long A12-low
+@@ -1836,6 +1906,16 @@ void ppu_native_interval_run(unsigned cycles, unsigned align)
+ {
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+     if (hw_pal()) { run_pal_render_interval(cycles); return; }
++    if (dot_kind == DOT_SPRITE) {
++        /* Admission excludes address observers: no intermediate mapper
++         * timestamp, IRQ or PRG mapping deadline can be hidden here. */
++        for (unsigned i = 0; i < cycles * 3u; ++i) {
++            if (align < 2) { sprite_fetch_half_dot(); sprite_fetch_dot(); }
++            else { sprite_fetch_dot(); sprite_fetch_half_dot(); }
++        }
++        ppu_native_fetch_cycles += cycles;
++        return;
++    }
+     if (dot_kind == DOT_IDLE) {
+         unsigned dots = cycles * 3u;
+         ppu.dot += dots;
+@@ -2194,6 +2274,7 @@ void ppu_state_reloaded(void)
+ void ppu_power_on(void)
+ {
+     ppu_native_sprite_spans = ppu_native_sprite_dots = 0;
++    ppu_native_fetch_cycles = 0;
+     memset(&ppu, 0, sizeof(ppu));
+     sm_rest = false;
+     dot_kind = DOT_UNKNOWN;
+diff --git a/runner/cyc/tests/raster_interval_probe.c b/runner/cyc/tests/raster_interval_probe.c
+index 6ab1dc1..82e11f0 100644
+--- a/runner/cyc/tests/raster_interval_probe.c
++++ b/runner/cyc/tests/raster_interval_probe.c
+@@ -42,9 +42,22 @@ static uint64_t background_hash(void)
+     }
+     return 0;
+ }
+-static void replay_route(bool reference)
++static void advance_cycles(unsigned count, bool reference)
++{
++    while (count) {
++        unsigned n = reference ? 0 : hw_native_interval_limit();
++        if (n > count) n = count;
++        if (n) {
++            hw.cpu_addr=0;hw.cpu_reading=hw.data_driven=1;
++            hw.data_bus=hw.internal_bus=hw.ram[0];hw_native_interval_run(n);
++            count -= n;
++        } else { bus_access(0,0,false); --count; }
++    }
++}
++static void replay_route(bool reference, bool sprite_fetch)
+ {
+     for (unsigned i=0;i<257;++i) {
++        if (sprite_fetch) { advance_cycles(13, reference); continue; }
+         bus_access(0,0,false);
+         unsigned n=hw_native_interval_limit();
+         if (n>12) n=12;
+@@ -57,13 +70,15 @@ static void replay_route(bool reference)
+ }
+ int main(int argc, char **argv)
+ {
+-    bool reference=false, pal=false, raster=true;
++    bool reference=false, pal=false, raster=true, sprite_fetch=false;
+     for (int i=1;i<argc;++i) {
+         if (!strcmp(argv[i],"--reference")) reference=true;
+         if (!strcmp(argv[i],"--pal")) pal=true;
++        if (!strcmp(argv[i],"--sprite-fetch")) sprite_fetch=true;
+         if (!strcmp(argv[i],"--no-pal-raster")) raster=false;
+     }
+     hw_native_set_pal_raster(raster);
++    if (sprite_fetch) hw_native_set_sprite_fetch(!reference);
+     static uint8_t image[16+65536+16384];
+     static const unsigned ntsc_boards[]={0,1,4,66}, pal_boards[]={0,3};
+     const unsigned *boards=pal?pal_boards:ntsc_boards;
+@@ -85,7 +100,8 @@ int main(int argc, char **argv)
+             uint64_t pcm=UINT64_C(1469598103934665603), samples=0;
+             printf("case %u %u %u\n",mapper,ram,align);
+             for (unsigned q=0;q<128;++q) {
+-                bus_access(0x2000,(q&1)?0x10:0,true);
++                bus_access(0x2000,(uint8_t)(((q&1)?0x10:0) |
++                    (sprite_fetch ? ((q&2)?0x20:0) | ((q&4)?8:0) : 0)),true);
+                 bus_access(0x2001,(uint8_t)((q%3==0?0x0a:q%3==1?0x14:0x1e)|((q&3)<<5)|(q&1)),true);
+                 if (mapper==4) {
+                     bus_access(0xe000,0,true); bus_access(0xc000,(uint8_t)(q&7),true);
+@@ -95,7 +111,11 @@ int main(int argc, char **argv)
+                 else if (mapper==66) bus_access(0x8000,(uint8_t)(q&0x11),true);
+                 unsigned limit=0,wait;
+                 for (wait=0;wait<100000;++wait) {
+-                    limit=hw_native_interval_limit(); if (limit>=12) break;
++                    if (sprite_fetch) {
++                        if (ppu.scanline < 240 && ppu.dot >= 258+(int)(q%16) && ppu.dot < 280) {
++                            limit=24; break;
++                        }
++                    } else { limit=hw_native_interval_limit(); if (limit>=12) break; }
+                     bus_access(0,0,false);
+                 }
+                 check(wait<100000,"reach stable raster interior");
+@@ -132,7 +152,13 @@ int main(int argc, char **argv)
+                 cyc_render_capture_background((q&1)!=0);
+                 for (unsigned i=0;i<4;++i) cyc_background_pipe[i]=(uint8_t)((q*13+i*17)&63);
+                 unsigned n=q%4==0?limit:1+(q%limit);
+-                if (reference) for (unsigned i=0;i<n;++i) bus_access(0,0,false);
++                if (sprite_fetch) {
++                    for (unsigned i=0;i<32;++i) ppu.oam2[i]=(uint8_t)(q*17+i*31);
++                    if (q%5==0) bus_access(0x2005,(uint8_t)q,true);
++                    if (q%7==0) bus_access(0x2001,(uint8_t)(q*3),true);
++                    if (q%11==0) bus_access(0x2002,0,false);
++                    advance_cycles(n, reference);
++                } else if (reference) for (unsigned i=0;i<n;++i) bus_access(0,0,false);
+                 else {
+                     hw.cpu_addr=0; hw.cpu_reading=1; hw.data_driven=1;
+                     hw.data_bus=hw.internal_bus=hw.ram[0]; hw_native_interval_run(n);
+@@ -149,16 +175,18 @@ int main(int argc, char **argv)
+             }
+             uint8_t *state=NULL;size_t size=0;char error[256];
+             check(cyc_state_save(&state,&size,error,sizeof(error)),"save raster current build");
+-            replay_route(reference);
++            replay_route(reference, sprite_fetch);
+             uint64_t machine=cyc_hw_state_hash(), memory=cyc_mem_state_hash(), background=background_hash();
+             check(cyc_state_load(state,size,error,sizeof(error)),"restore raster current build");free(state);
+-            replay_route(reference);
++            replay_route(reference, sprite_fetch);
+             check(machine==cyc_hw_state_hash() && memory==cyc_mem_state_hash() && background==background_hash(),
+                   "current-build raster/frame/background replay");
+         }
+     }
+ #if NESRECOMP_PPU_HLE
+-    if (!reference && (!pal || raster)) check(ppu_native_raster_tiles>100,"whole raster job actually used");
++    if (!reference && sprite_fetch && !pal)
++        check(ppu_native_fetch_cycles>20,"sprite fetch intervals actually used");
++    if (!sprite_fetch && !reference && (!pal || raster)) check(ppu_native_raster_tiles>100,"whole raster job actually used");
+ #endif
+     return 0;
+ }
+diff --git a/tools/cyc/test_raster_intervals.py b/tools/cyc/test_raster_intervals.py
+index 534d076..d0ec786 100644
+--- a/tools/cyc/test_raster_intervals.py
++++ b/tools/cyc/test_raster_intervals.py
+@@ -9,6 +9,7 @@ import subprocess
+ 
+ def main():
+     ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument('--sprite-fetch', action='store_true', help='Sprite fetch windows, register invalidation and following-line output')
+     ap.add_argument('--pal', action='store_true', help='Qualify PAL NROM/CNROM over all five phases')
+     ap.add_argument('--probe', required=True, type=Path)
+     ap.add_argument('--out', required=True, type=Path)
+@@ -24,6 +25,8 @@ def main():
+         command = [str(args.probe.resolve())]
+         if args.pal:
+             command.append('--pal')
++        if args.sprite_fetch:
++            command.append('--sprite-fetch')
+         if mode == 'raster-reference':
+             command.append('--no-pal-raster')
+         if mode == 'reference':
+@@ -52,14 +55,15 @@ def main():
+     if len(before) != configurations * 129:
+         raise AssertionError(f'Expected {configurations} configurations with 128 cases, got {len(before)} rows')
+     result = dict(
+-        cases=configurations * 128, rows=len(before), region='PAL' if args.pal else 'NTSC',
++        cases=configurations * 128, rows=len(before), region='PAL' if args.pal else 'NTSC', sprite_fetch=args.sprite_fetch,
+         output_sha256=hashlib.sha256(b'\n'.join(before)).hexdigest(),
+         probe_sha256=hashlib.sha256(args.probe.read_bytes()).hexdigest(),
+         coverage=(('PAL NROM/CNROM, CHR ROM/RAM, five phases, ' if args.pal else
+                    'NROM/MMC1/MMC3/GxROM, CHR ROM/RAM, four alignments, ') +
+                   'mirroring/four-screen, scroll/fine X, palette/emphasis/greyscale, '
+                   'OAM/overflow/sprite-zero, Zapper, decay deadlines, background records, '
+-                  'current-build serialized-state replay and full PCM'))
++                  'current-build serialized-state replay and full PCM' +
++                  (', sprite fetch/8x16/flips/register invalidation' if args.sprite_fetch else '')))
+     (out / 'results.json').write_text(json.dumps(result, indent=2) + '\n',
+                                     encoding='utf-8', newline='\n')
+     print(f'PASS: {configurations * 128} varied raster cases and current-build replay; hardware/raster/RAM/background/PCM identical')

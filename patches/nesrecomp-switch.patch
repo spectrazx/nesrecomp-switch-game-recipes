@@ -184,10 +184,10 @@ index 0000000..3868d51
 +`test_cyc_project.py` continues to check default integration and regeneration.
 diff --git a/docs/PAL_CLOCK.md b/docs/PAL_CLOCK.md
 new file mode 100644
-index 0000000..6efdf17
+index 0000000..adceee7
 --- /dev/null
 +++ b/docs/PAL_CLOCK.md
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,55 @@
 +# PAL master-clock dispatch
 +
 +The ordinary PAL CPU-cycle tail is specialized for the five possible PPU
@@ -217,12 +217,38 @@ index 0000000..6efdf17
 +22.82% and 25.02% reductions (median 23.92%), versus about 0.5% A/A variation.
 +These are desktop results; they are not a Switch FPS claim. Physical-console
 +qualification of the new scheduler remains pending.
++
++## Stable visible render tails
++
++`ppu_clock_pal_cpu_tail` specializes the PPU side of a complete tick-1 tail.
++When the cached dot kind is `DOT_RENDER` and the current dot is below 250,
++all fifteen remaining master ticks fit inside the existing stable visible
++render span. Five constant schedules retain three dot and three half-dot
++operations, NMI at tick 6, IRQ at tick 9, and the exact `hw.tick` observed by
++each operation. Cartridge address notifications still follow each dot; the
++machine performs any late cartridge clock at tick 15 after the PPU events.
++Tick-zero CPU/APU/cartridge work has already run before entering this tail.
++
++The shortcut removes repeated PPU dispatch only. It does not batch CPU
++instructions or enable PAL native intervals. Unknown/blank/general spans,
++register-split cycles, end-of-span dots and PAL forced OAM refresh continue
++through the existing clock path. The NTSC entry point is unchanged. The
++core profiler attributes the coupled work to its existing PPU-tail category.
++
++`NESRECOMP_PAL_PPU_TAIL_REFERENCE=1` disables just this PPU shortcut while
++retaining the specialized PAL master clock. CTest `cyc_pal_ppu_tail` compares
++that reference against the candidate with the same full-state, delayed-I/O,
++DMA, Zapper, snapshot, picture and audio stimulus. `cyc_pal_clock` retains the
++older universal master-clock reference as a second comparison, and
++`cyc_ppu_spans` retains the general PPU reference. The implementation and its
++reference switch belong to the shared core, with no game addresses or
++frontend/SDL/libnx dependencies.
 diff --git a/docs/SWITCH.md b/docs/SWITCH.md
 new file mode 100644
-index 0000000..b078fbd
+index 0000000..a2cc012
 --- /dev/null
 +++ b/docs/SWITCH.md
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,281 @@
 +# Nintendo Switch 1 cycle runner (experimental)
 +
 +An opt-in libnx/SDL2 host for one compiled cartridge per `.nro`. It reuses the
@@ -396,6 +422,23 @@ index 0000000..b078fbd
 +Logging remains active. Every five seconds `runtime.log` reports FPS and
 +average emulation, audio, presentation and wait milliseconds. Startup names
 +the renderer, PPU and save setting for the next physical-console measurement.
++The `audio_supply` report adds generated PCM duration relative to wall time,
++queued output duration and software queue observations. Sustained supply below
++one means the producer cannot feed real-time playback. Empty queue observations
++are not exact hardware underrun counts; the existing dropped-chunk counter
++tracks excess output discarded at the upper limit, not starvation.
++
++For an explicit development launch, `--nxlink-log` connects stdout to the
++nxlink host while keeping stderr's SD log. Launch it using nxlink's `-s` server
++and `--args '--nxlink-log --exit-after 1800'` (the frame limit is optional).
++Host timing/audio reports are mirrored to both destinations. A failed or
++unavailable connection falls back to the SD log. Ordinary launches do not
++initialize sockets. Network diagnostics also report applet/operation/performance
++mode and attempt a read-only CPU clock query; clock-service failures are logged
++and no clocks are changed. Docker users must publish console TCP port 28771,
++in addition to reaching the console's NetLoader TCP port 28280 for upload.
++The native SDL contract covers metrics and non-Switch network fallback;
++physical network/service behavior needs console qualification.
 +
 +For the Mario recipe, place:
 +
@@ -488,7 +531,7 @@ index 0000000..b078fbd
 +costs alongside ordinary frame timings; diagnostic overhead means those FPS
 +figures are not production benchmarks. It has no game-specific branches.
 diff --git a/runner/cyc/CMakeLists.txt b/runner/cyc/CMakeLists.txt
-index 6c9e0ee..048e885 100644
+index 6c9e0ee..d76e924 100644
 --- a/runner/cyc/CMakeLists.txt
 +++ b/runner/cyc/CMakeLists.txt
 @@ -53,6 +53,15 @@ endif()
@@ -530,7 +573,7 @@ index 6c9e0ee..048e885 100644
  target_compile_definitions(cyc_ppu_span_candidate PRIVATE NESRECOMP_APU_VERIFY_LEVELS=1)
  add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
      ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_ppu_spans.py
-@@ -537,6 +553,29 @@ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
+@@ -537,6 +553,45 @@ add_test(NAME cyc_ppu_spans COMMAND ${Python3_EXECUTABLE}
      --candidate $<TARGET_FILE:cyc_ppu_span_candidate>)
  set_tests_properties(cyc_ppu_spans PROPERTIES TIMEOUT 180)
  
@@ -557,9 +600,66 @@ index 6c9e0ee..048e885 100644
 +    --candidate $<TARGET_FILE:cyc_pal_clock_candidate>)
 +set_tests_properties(cyc_pal_clock PROPERTIES TIMEOUT 180)
 +
++# Isolate stable PAL render-tail dispatch from the already-specialized PAL
++# master clock. The original universal-clock comparison above remains active.
++add_executable(cyc_pal_ppu_tail_reference tests/ppu_span_probe.c hw_machine.c hw_ppu.c hw_apu.c
++    $<TARGET_OBJECTS:cyc_pal_clock_runtime>)
++target_include_directories(cyc_pal_ppu_tail_reference PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
++target_link_libraries(cyc_pal_ppu_tail_reference PRIVATE ${NESRECOMP_CYC_LIBRARIES})
++target_compile_definitions(cyc_pal_ppu_tail_reference PRIVATE NESRECOMP_PAL_PPU_TAIL_REFERENCE=1)
++if(MSVC)
++    target_compile_definitions(cyc_pal_ppu_tail_reference PRIVATE _CRT_SECURE_NO_WARNINGS)
++endif()
++add_test(NAME cyc_pal_ppu_tail COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_ppu_spans.py
++    --reference $<TARGET_FILE:cyc_pal_ppu_tail_reference>
++    --candidate $<TARGET_FILE:cyc_pal_clock_candidate>)
++set_tests_properties(cyc_pal_ppu_tail PROPERTIES TIMEOUT 180)
++
  add_executable(cyc_native_interval_probe tests/native_interval_probe.c hw_ppu.c hw_apu.c
      $<TARGET_OBJECTS:cyc_ppu_span_runtime>)
  target_include_directories(cyc_native_interval_probe PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
+@@ -549,6 +604,15 @@ add_test(NAME cyc_native_intervals COMMAND ${Python3_EXECUTABLE}
+     --probe $<TARGET_FILE:cyc_native_interval_probe>)
+ set_tests_properties(cyc_native_intervals PROPERTIES TIMEOUT 180)
+ 
++add_executable(cyc_masked_irq_probe tests/masked_irq_probe.c hw_ppu.c hw_apu.c
++    $<TARGET_OBJECTS:cyc_ppu_span_runtime>)
++target_include_directories(cyc_masked_irq_probe PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
++target_link_libraries(cyc_masked_irq_probe PRIVATE ${NESRECOMP_CYC_LIBRARIES})
++add_test(NAME cyc_masked_irq COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_masked_irq.py
++    --probe $<TARGET_FILE:cyc_masked_irq_probe>)
++set_tests_properties(cyc_masked_irq PROPERTIES TIMEOUT 180)
++
+ add_executable(cyc_raster_interval_probe tests/raster_interval_probe.c hw_ppu.c hw_apu.c
+     $<TARGET_OBJECTS:cyc_ppu_span_runtime>)
+ target_include_directories(cyc_raster_interval_probe PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
+@@ -695,3 +759,24 @@ if(TARGET SDL2::SDL2)
+     endif()
+     add_test(NAME cyc_chat_online COMMAND cyc_chat_online_test)
+ endif()
++
++add_executable(cyc_pal_interval_probe tests/pal_interval_probe.c hw_ppu.c hw_apu.c
++    $<TARGET_OBJECTS:cyc_ppu_span_runtime>)
++target_include_directories(cyc_pal_interval_probe PRIVATE ${NESRECOMP_CYC_INCLUDE_DIRS})
++target_link_libraries(cyc_pal_interval_probe PRIVATE ${NESRECOMP_CYC_LIBRARIES})
++add_test(NAME cyc_pal_intervals COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_pal_intervals.py
++    --probe $<TARGET_FILE:cyc_pal_interval_probe>)
++set_tests_properties(cyc_pal_intervals PROPERTIES TIMEOUT 180)
++
++add_test(NAME cyc_pal_raster_intervals COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_raster_intervals.py
++    --probe $<TARGET_FILE:cyc_raster_interval_probe> --pal
++    --out ${CMAKE_CURRENT_BINARY_DIR}/pal_raster_interval_results)
++set_tests_properties(cyc_pal_raster_intervals PROPERTIES TIMEOUT 600)
++
++add_test(NAME cyc_sprite_fetch_intervals COMMAND ${Python3_EXECUTABLE}
++    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/cyc/test_raster_intervals.py
++    --probe $<TARGET_FILE:cyc_raster_interval_probe> --sprite-fetch
++    --out ${CMAKE_CURRENT_BINARY_DIR}/sprite_fetch_interval_results)
++set_tests_properties(cyc_sprite_fetch_intervals PROPERTIES TIMEOUT 600)
 diff --git a/runner/cyc/PROJECTS.md b/runner/cyc/PROJECTS.md
 index e8d8b97..0d5fcd8 100644
 --- a/runner/cyc/PROJECTS.md
@@ -615,7 +715,7 @@ index c2b1d97..4537424 100644
      if (n == 0 || n >= sizeof(dir)) strcpy(dir, ".");
  #else
 diff --git a/runner/cyc/cyc_host.c b/runner/cyc/cyc_host.c
-index 691dfc1..b5b2316 100644
+index 691dfc1..ab3b41f 100644
 --- a/runner/cyc/cyc_host.c
 +++ b/runner/cyc/cyc_host.c
 @@ -182,6 +182,8 @@
@@ -627,7 +727,23 @@ index 691dfc1..b5b2316 100644
  #ifdef NESRECOMP_CYCLE_HDPACK_MODS
  #include "cyc_hdpack.h"
  #endif
-@@ -856,6 +858,10 @@ static double wall_seconds(void) {
+@@ -611,6 +613,15 @@ static void disk_tick(long frame) {
+ 
+ /* Replay the existing NES-pad/disk route through normal SDL presentation.
+  * The desktop loop still owns session input, rendering and audio production. */
++bool cyc_host_window_replay_restart(void)
++{
++    if (disk_event_count) return false;
++    input_next = 0;
++    memset(input_held, 0, sizeof(input_held));
++    memset(input_game, 0, sizeof(input_game));
++    memset(input_game_set, 0, sizeof(input_game_set));
++    return true;
++}
+ bool cyc_host_window_replay(long frame, uint8_t *buttons, size_t count)
+ {
+     if (!window_scripted_input) return false;
+@@ -856,6 +867,10 @@ static double wall_seconds(void) {
  #endif
  }
  
@@ -638,7 +754,29 @@ index 691dfc1..b5b2316 100644
  static void wait_until(double t) {
      for (;;) {
          double left = t - wall_seconds();
-@@ -1286,6 +1292,9 @@ static int host_main(int argc, char **argv) {
+@@ -1259,13 +1274,20 @@ static int host_main(int argc, char **argv) {
+         else if (!strcmp(argv[i], "--replay-exact")) replay_exact = true, headless = true;
+         else if (!strcmp(argv[i], "--mods-root") && i + 1 < argc) mods_root = argv[++i];
+         else if ((!strcmp(argv[i], "--virtual-pad") || !strcmp(argv[i], "--exit-after") ||
++#ifdef CYC_SWITCH
++                  !strcmp(argv[i], "--benchmark-warmup") ||
++#endif
+                   !strcmp(argv[i], "--config") || !strcmp(argv[i], "--tcp")) && i + 1 < argc) {
+ #if defined(CYC_WITH_SDL)
+             cyc_sdl_option(argv[i], argv[i + 1]);
+ #endif
+             ++i;
+         }
+-        else if (!strcmp(argv[i], "--hidden") || !strcmp(argv[i], "--uncapped") || !strcmp(argv[i], "--pause-unfocused")) {
++        else if (!strcmp(argv[i], "--hidden") || !strcmp(argv[i], "--uncapped") || !strcmp(argv[i], "--pause-unfocused")
++#ifdef CYC_SWITCH
++                 || !strcmp(argv[i], "--nxlink-log") || !strcmp(argv[i], "--benchmark") || !strcmp(argv[i], "--benchmark-suite")
++#endif
++        ) {
+ #if defined(CYC_WITH_SDL)
+             cyc_sdl_option(argv[i], "");
+ #endif
+@@ -1286,6 +1308,9 @@ static int host_main(int argc, char **argv) {
          }
      }
  #ifndef CYC_ORACLE
@@ -648,7 +786,7 @@ index 691dfc1..b5b2316 100644
      s_saves_enabled = !no_save;
      if (!rom_path) rom_path = cyc_native_fds_image_path;   /* game.toml [fds] image */
      if (headless && mods_root) {
-@@ -1471,6 +1480,10 @@ session_restart:
+@@ -1471,6 +1496,10 @@ session_restart:
      if (identity_region < 0) identity_region = CYC_GAME_REGION;
  #endif
      if (identity_region < 0) identity_region = cyc_cart_region();
@@ -659,7 +797,7 @@ index 691dfc1..b5b2316 100644
      if (cyc_native_program_name && !nes_cart_identity_compatible_region(&cart_info, cyc_native_cart_hash,
                                                                       identity_region == CYC_REGION_PAL)) {
          cyc_diagnostics_error("Cartridge metadata differs from the compiled program; regenerate native code\n");
-@@ -1569,6 +1582,9 @@ session_restart:
+@@ -1569,6 +1598,9 @@ session_restart:
      if (zapper_port >= 0) cyc_zapper_attach((unsigned)zapper_port);
      cyc_diagnostics_note("machine powered on mapper=%u native_prg_hash=%08X actual_prg_hash=%08X", cart_info.mapper, cyc_native_prg_hash, cyc_prg_hash());
      cyc_run_power_on();
@@ -669,14 +807,14 @@ index 691dfc1..b5b2316 100644
      fds_save_powered_on();
      cyc_state_set_host(&HOST_STATE);
      if (present_w > 0) cyc_video_window_resized(present_w, present_h);
-@@ -1990,12 +2006,20 @@ session_restart:
+@@ -1990,12 +2022,20 @@ session_restart:
  #ifndef CYC_ORACLE
  int main(int argc, char **argv)
  {
 +#ifdef CYC_SWITCH
-+    int cyc_switch_init(void);
++    int cyc_switch_init(int argc, char **argv);
 +    void cyc_switch_shutdown(void);
-+    if (!cyc_switch_init()) return 2;
++    if (!cyc_switch_init(argc, argv)) return 2;
 +#endif
  #ifdef CYC_STARTUP_DIAGNOSTICS
      /* Capture even failures in argument parsing, settings or launcher setup. */
@@ -690,6 +828,19 @@ index 691dfc1..b5b2316 100644
      return result;
  }
  #endif
+diff --git a/runner/cyc/cyc_host.h b/runner/cyc/cyc_host.h
+index 3e91a0a..d9797ef 100644
+--- a/runner/cyc/cyc_host.h
++++ b/runner/cyc/cyc_host.h
+@@ -66,6 +66,8 @@ bool   cyc_host_frame_unpaced(void);
+ 
+ /* Optional fixed-route replay for the normal SDL render/audio loop. */
+ bool cyc_host_window_replay(long frame, uint8_t *buttons, size_t count);
++/* Restart a cartridge-only pad route after restoring the initial machine. */
++bool cyc_host_window_replay_restart(void);
+ void cyc_host_window_game_input(uint32_t *buttons, size_t count);
+ 
+ #ifdef __cplusplus
 diff --git a/runner/cyc/cyc_profile.h b/runner/cyc/cyc_profile.h
 new file mode 100644
 index 0000000..55ac2cb
@@ -862,10 +1013,18 @@ index eb91963..125478f 100644
  void cyc_replay_set_config_path(const char *path) { (void)path; }
  bool cyc_replay_init(const char *title) { (void)title; return false; }
 diff --git a/runner/cyc/cyc_state.c b/runner/cyc/cyc_state.c
-index 0565f28..fbd8f65 100644
+index 0565f28..18b312f 100644
 --- a/runner/cyc/cyc_state.c
 +++ b/runner/cyc/cyc_state.c
-@@ -425,7 +425,10 @@ bool cyc_state_save_file(const char *path, char *err, size_t err_len)
+@@ -361,6 +361,7 @@ bool cyc_state_load(const uint8_t *data, size_t len, char *err, size_t err_len)
+      * machine). */
+     hw_native_interval.pending = hw_native_interval.credit = 0;
+     hw_native_interval.enabled = false;
++    hw_native_interval.irq_mask = NULL;
+     memcpy(&cpu, ccpu->data, sizeof(cpu));
+     memcpy(&hw, chw->data, sizeof(hw));
+     hw_extra_timing = timing;
+@@ -425,7 +426,10 @@ bool cyc_state_save_file(const char *path, char *err, size_t err_len)
      snprintf(tmp, sizeof(tmp), "%s.tmp", path);
      FILE *f = fopen(tmp, "wb");
      bool ok = f && fwrite(data, 1, len, f) == len;
@@ -877,8 +1036,107 @@ index 0565f28..fbd8f65 100644
      free(data);
      if (ok) {
  #ifdef _WIN32
+@@ -578,6 +582,7 @@ void cyc_snapshot_restore(const CycSnapshot *s)
+      * device work. Do not publish pixels/audio from the discarded future. */
+     hw_native_interval.pending = hw_native_interval.credit = 0;
+     hw_native_interval.enabled = false;
++    hw_native_interval.irq_mask = NULL;
+     size_t n;
+     cpu = s->cpu;
+     hw = s->hw;
+diff --git a/runner/cyc/hw.h b/runner/cyc/hw.h
+index 0b416c9..572559c 100644
+--- a/runner/cyc/hw.h
++++ b/runner/cyc/hw.h
+@@ -75,6 +75,7 @@ typedef struct {
+     uint16_t addr;
+     uint8_t value, kind, driven;
+     bool enabled;
++    const uint8_t *irq_mask; /* non-NULL only while a held IRQ is CPU-masked */
+ #if NESRECOMP_NATIVE_PRG_GUARDS
+     const uint8_t *prg[8];
+     bool checked_prg;
+@@ -102,11 +103,24 @@ const uint8_t *hw_prg_guard_image(size_t *size);
+ void hw_native_end(void);
+ void hw_native_flush(void);
+ bool hw_native_prepare(void);
++/* Diagnostic/reference selection; flushes pending work before changing policy. */
++void hw_native_set_masked_irq(bool enabled);
++void hw_native_set_pal_intervals(bool enabled);
++void hw_native_set_pal_raster(bool enabled);
++void hw_native_set_sprite_fetch(bool enabled);
++void hw_native_set_sprite_fetch_jobs(bool enabled);
++extern uint64_t ppu_native_fetch_cycles, ppu_native_fetch_jobs;
+ 
+ static inline bool hw_native_reserve(void)
+ {
+ #if NESRECOMP_NATIVE_INTERVALS
+     if (!hw_native_interval.enabled) return false;
++    /* CLI/PLP/RTI can change I within a compiled dispatch. Stop before its
++     * next bus cycle and retain ordinary polling until the next dispatch. */
++    if (hw_native_interval.irq_mask && !*hw_native_interval.irq_mask) {
++        hw_native_end();
++        return false;
++    }
+     if (!hw_native_interval.credit && !hw_native_prepare()) return false;
+     --hw_native_interval.credit;
+     ++hw_native_interval.pending;
+diff --git a/runner/cyc/hw_apu.c b/runner/cyc/hw_apu.c
+index 5076651..7d2ef71 100644
+--- a/runner/cyc/hw_apu.c
++++ b/runner/cyc/hw_apu.c
+@@ -989,6 +989,18 @@ void apu_cycle(void)
+  * /IRQ is one open-drain line shared with the cartridge, so a mapper's
+  * interrupt (MMC3's scanline counter) is wired in parallel: a handler that
+  * acknowledges the APU still sees the line held by the cartridge. */
++/* A settled four-step frame IRQ stays asserted until a CPU register access.
++ * Such accesses flush the cursor. Pending clears/resets and every DMA source
++ * remain excluded; this does not predict a new interrupt or suppress one. */
++bool apu_native_masked_irq_ready(void)
++{
++    return apu.frame_irq && apu.frame_irq_out && !apu.irq_inhibit && !apu.five_step &&
++           !apu.frame_irq_clear && (apu.reset_delay & 0x80) &&
++           !(apu.oam_dma | apu.dmc_dma | apu.dmc_bytes | apu.dmc_irq |
++             apu.dmc_enable_delay | apu.dmc_start_delay |
++             apu.implicit_abort | apu.implicit_abort_armed);
++}
++
+ bool apu_native_interval_ready(void)
+ {
+     /* No memory transfer may be requested during an independent run. The
+@@ -1102,7 +1114,7 @@ void apu_native_interval_run(unsigned cycles)
+ #if !NESRECOMP_APU_LEVEL_REFERENCE
+     /* The machine proved no DMA/IRQ deadline and no expansion device on these
+      * boards. Dense audible timers and short runs keep the simpler executor. */
+-    if (cycles >= 8 && audio.on && !apu.strobe &&
++    if (!hw_pal() && cycles >= 8 && audio.on && !apu.strobe &&
+         (hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 4 || hw_cart.mapper == 66) &&
+         !(apu.len[CH_TRIANGLE].count && apu.tri_linear && apu.tri_period >= 2 && apu.tri_period < 8) &&
+         !(apu.len[CH_NOISE].count && apu.noise_period < 8)) {
+diff --git a/runner/cyc/hw_internal.h b/runner/cyc/hw_internal.h
+index b2cd316..7a3cf4c 100644
+--- a/runner/cyc/hw_internal.h
++++ b/runner/cyc/hw_internal.h
+@@ -439,6 +439,9 @@ void    ppu_half_dot(void);
+  * all its PPU events, including the original NMI/IRQ sample positions.
+  * False leaves the machine untouched for the general master-clock path. */
+ bool    ppu_clock_cpu_tail(unsigned align);
++/* PAL equivalent: ticks 1..15, five divider phases, including hw.tick.
++ * False likewise leaves the machine untouched. */
++bool    ppu_clock_pal_cpu_tail(unsigned phase);
+ /* Stable tick-1 intervals: no register access or scanline edge may occur.
+  * The machine proves that CPU/APU/board observers cannot distinguish the
+  * independent device runs before calling the executor. */
+@@ -459,6 +462,7 @@ void    apu_power_on(void);
+ /* The APU's once-per-CPU-cycle clock (tick 0). */
+ void    apu_cycle(void);
+ bool    apu_native_interval_ready(void);
++bool    apu_native_masked_irq_ready(void);
+ void    apu_native_interval_run(unsigned cycles);
+ /* Tick 7: the IRQ input the CPU will poll, and the frame IRQ re-assertion. */
+ void    apu_sample_irq(void);
 diff --git a/runner/cyc/hw_machine.c b/runner/cyc/hw_machine.c
-index b41e849..0fea506 100644
+index b41e849..981e508 100644
 --- a/runner/cyc/hw_machine.c
 +++ b/runner/cyc/hw_machine.c
 @@ -10,6 +10,7 @@
@@ -889,7 +1147,7 @@ index b41e849..0fea506 100644
  #include "cyc_mod.h"
  #include "cyc_ring.h"
  #include "cyc_trace.h"
-@@ -21,6 +22,42 @@
+@@ -21,6 +22,48 @@
  #include <stdlib.h>
  #include <string.h>
  
@@ -909,6 +1167,11 @@ index b41e849..0fea506 100644
 +    bool result = ppu_clock_cpu_tail(align);
 +    cyc_profiler_end(CYC_PROFILE_PPU_TAIL, t); return result;
 +}
++static inline bool profiled_pal_ppu_tail(unsigned phase) {
++    uint64_t t = cyc_profiler_begin(CYC_PROFILE_PPU_TAIL);
++    bool result = ppu_clock_pal_cpu_tail(phase);
++    cyc_profiler_end(CYC_PROFILE_PPU_TAIL, t); return result;
++}
 +static inline void profiled_ppu_native(unsigned cycles, unsigned align) {
 +    uint64_t t = cyc_profiler_begin(CYC_PROFILE_PPU_NATIVE);
 +    ppu_native_interval_run(cycles, align); cyc_profiler_end(CYC_PROFILE_PPU_NATIVE, t);
@@ -924,6 +1187,7 @@ index b41e849..0fea506 100644
 +#define ppu_dot profiled_ppu_dot
 +#define ppu_half_dot profiled_ppu_half
 +#define ppu_clock_cpu_tail profiled_ppu_tail
++#define ppu_clock_pal_cpu_tail profiled_pal_ppu_tail
 +#define ppu_native_interval_run profiled_ppu_native
 +#define apu_cycle profiled_apu_cycle
 +#define apu_native_interval_run profiled_apu_native
@@ -932,7 +1196,7 @@ index b41e849..0fea506 100644
  HwMachine  hw;
  HwExtraTiming hw_extra_timing;
  HwRegionTiming hw_region_timing;
-@@ -91,20 +128,56 @@ static inline void pal_ppu_edge(unsigned half_phase)
+@@ -91,20 +134,60 @@ static inline void pal_ppu_edge(unsigned half_phase)
      else if (half_phase == 5) ppu_half_dot();
  }
  
@@ -968,6 +1232,10 @@ index b41e849..0fea506 100644
 + * This is host dispatch removal, not native guest-cycle batching. */
 +static void run_pal_ticks_1_to_15(void)
 +{
++    if (ppu_clock_pal_cpu_tail(hw_region_timing.phase)) {
++        if (hw_cart.clock_late) hw_cart_cpu_clock_late();
++        return;
++    }
 +#define PAL_STEP(k, phase) do { hw.tick = (k) + 1; run_pal_tick_at(k, phase); } while (0)
 +#define PAL_TAIL(phase) do { \
 +    PAL_STEP(1, phase); PAL_STEP(2, phase); PAL_STEP(3, phase); \
@@ -991,7 +1259,128 @@ index b41e849..0fea506 100644
  void hw_clock_run_ticks(int n)
  {
      if (hw_isolated) return;
-@@ -347,6 +420,10 @@ void hw_cycle_start(uint16_t addr, HwCycleKind kind)
+@@ -180,6 +263,28 @@ static inline void run_tick_0(void)
+ /* hw.h                                                                      */
+ /* ------------------------------------------------------------------------- */
+ 
++static bool native_masked_irq_enabled = true;
++void hw_native_set_masked_irq(bool enabled)
++{
++    hw_native_flush();
++    native_masked_irq_enabled = enabled;
++}
++
++static bool native_pal_intervals_enabled = true;
++void hw_native_set_pal_intervals(bool enabled)
++{
++    hw_native_flush();
++    native_pal_intervals_enabled = enabled;
++}
++static bool native_interval_board_allowed(void)
++{
++    /* PAL initially qualifies fixed-PRG NROM/CNROM only. CPU mapper writes
++     * flush pending work before a CNROM CHR-bank change. */
++    if (hw_pal() && !hw_isolated)
++        return native_pal_intervals_enabled && (hw_cart.mapper == 0 || hw_cart.mapper == 3);
++    return hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 4 || hw_cart.mapper == 66;
++}
++
+ unsigned hw_native_interval_limit(void)
+ {
+ #if NESRECOMP_ISOLATED_NATIVE
+@@ -195,13 +300,17 @@ unsigned hw_native_interval_limit(void)
+         return remaining > 65535 ? 65535 : (unsigned)remaining;
+     }
+ #endif
+-    if (hw.tick != 1 || hw_pal() || hw_isolated || cyc_trace_enabled ||
++    if (hw.tick != 1 || hw_isolated || cyc_trace_enabled ||
+         hw_extra_timing.extra_scanlines || hw_cart.watch_cpu || hw_cart.clock_late ||
+-        (hw_cart.mapper != 0 && hw_cart.mapper != 1 &&
+-         hw_cart.mapper != 4 && hw_cart.mapper != 66) ||
+-        hw.irq_line || (hw_cart.mapper == 4 && hw_cart.m.irq_out) ||
+-        cpu.nmi_edge || cpu.nmi_input != ppu_nmi_output() ||
+-        !apu_native_interval_ready()) return 0;
++        !native_interval_board_allowed() ||
++        (hw_cart.mapper == 4 && hw_cart.m.irq_out) ||
++        cpu.nmi_edge || cpu.nmi_input != ppu_nmi_output()) return 0;
++    if (hw.irq_line || !apu_native_interval_ready()) {
++        /* Qualify a constant asserted APU line only while the CPU masks IRQ.
++         * The cursor watches I on every access; mapper IRQ remains excluded. */
++        if (!native_masked_irq_enabled || !hw.irq_line || !cpu.i ||
++            hw_cart.mapper == 4 || !apu_native_masked_irq_ready()) return 0;
++    }
+     /* On extended SxROM, PPU A12 can also select CPU PRG/RAM signals. Such
+      * boards need a bank-selection deadline before admitting CPU ROM reads. */
+     if (hw_cart.mapper == 1 && (hw_cart.m.ctrl & 0x10) &&
+@@ -217,18 +326,16 @@ void hw_native_begin(void)
+     hw_native_interval.ram = hw.ram;
+ #if NESRECOMP_ISOLATED_NATIVE
+     hw_native_interval.enabled = NESRECOMP_NATIVE_INTERVALS && !cyc_trace_enabled &&
+-        ((!hw_isolated && !hw_pal() && !hw_extra_timing.extra_scanlines)
++        ((!hw_isolated && (!hw_pal() || native_pal_intervals_enabled) && !hw_extra_timing.extra_scanlines)
+          || hw_isolated
+         ) &&
+-        (hw_cart.mapper == 0 || hw_cart.mapper == 1 ||
+-         hw_cart.mapper == 4 || hw_cart.mapper == 66) &&
++        native_interval_board_allowed() &&
+         !hw_prg_data_modified && !cyc_mod_rom_read_overrides &&
+         (!cyc_cpu_rts_observer || cyc_cpu_rts_observer == cyc_mod_return_observer);
+ #else
+     hw_native_interval.enabled = NESRECOMP_NATIVE_INTERVALS && !hw_isolated && !cyc_trace_enabled &&
+-        !hw_pal() && !hw_extra_timing.extra_scanlines &&
+-        (hw_cart.mapper == 0 || hw_cart.mapper == 1 ||
+-         hw_cart.mapper == 4 || hw_cart.mapper == 66) &&
++        (!hw_pal() || native_pal_intervals_enabled) && !hw_extra_timing.extra_scanlines &&
++        native_interval_board_allowed() &&
+         !hw_prg_data_modified && !cyc_mod_rom_read_overrides &&
+         (!cyc_cpu_rts_observer || cyc_cpu_rts_observer == cyc_mod_return_observer);
+ #endif
+@@ -246,16 +353,16 @@ void hw_native_begin_checked_rom(void)
+     hw_native_interval.checked_prg = true;
+ #if NESRECOMP_ISOLATED_NATIVE
+     hw_native_interval.enabled = NESRECOMP_NATIVE_INTERVALS && !cyc_trace_enabled &&
+-        ((!hw_isolated && !hw_pal() && !hw_extra_timing.extra_scanlines)
++        ((!hw_isolated && (!hw_pal() || native_pal_intervals_enabled) && !hw_extra_timing.extra_scanlines)
+          || hw_isolated
+         ) &&
+-        (hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 4 || hw_cart.mapper == 66) &&
++        native_interval_board_allowed() &&
+         !cyc_mod_rom_read_overrides &&
+         (!cyc_cpu_rts_observer || cyc_cpu_rts_observer == cyc_mod_return_observer);
+ #else
+     hw_native_interval.enabled = NESRECOMP_NATIVE_INTERVALS && !hw_isolated && !cyc_trace_enabled &&
+-        !hw_pal() && !hw_extra_timing.extra_scanlines &&
+-        (hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 4 || hw_cart.mapper == 66) &&
++        (!hw_pal() || native_pal_intervals_enabled) && !hw_extra_timing.extra_scanlines &&
++        native_interval_board_allowed() &&
+         !cyc_mod_rom_read_overrides &&
+         (!cyc_cpu_rts_observer || cyc_cpu_rts_observer == cyc_mod_return_observer);
+ #endif
+@@ -290,6 +397,7 @@ void hw_native_flush(void)
+ #endif
+     }
+     hw_native_interval.pending = hw_native_interval.credit = 0;
++    hw_native_interval.irq_mask = NULL;
+ }
+ 
+ void hw_native_end(void)
+@@ -309,6 +417,7 @@ bool hw_native_prepare(void)
+ #endif
+         ) || cyc_mod_rom_read_overrides) return false;
+     hw_native_interval.credit = hw_native_interval_limit();
++    hw_native_interval.irq_mask = hw_native_interval.credit && hw.irq_line ? &cpu.i : NULL;
+     hw_native_interval.driven = hw.data_driven;
+     return hw_native_interval.credit != 0;
+ }
+@@ -323,6 +432,7 @@ void hw_native_interval_run(unsigned cycles)
+     }
+ #endif
+     ppu_native_interval_run(cycles, hw.align);
++    if (hw_pal()) hw_region_timing.phase = (uint8_t)((hw_region_timing.phase + cycles) % 5u);
+     apu_native_interval_run(cycles);
+     /* Both sampled inputs are proven constant throughout this interval. */
+     cpu_nmi_input(ppu_nmi_output());
+@@ -347,6 +457,10 @@ void hw_cycle_start(uint16_t addr, HwCycleKind kind)
      }
      for (;;) {
          if (hw_pal()) {
@@ -1002,6 +1391,371 @@ index b41e849..0fea506 100644
              while (hw.tick < 16) run_pal_tick(hw.tick++);
              hw_region_timing.phase = (uint8_t)((hw_region_timing.phase + 1) % 5);
          } else if (hw.tick == 1) run_ticks_1_to_11();
+diff --git a/runner/cyc/hw_ppu.c b/runner/cyc/hw_ppu.c
+index 499a425..4fb3089 100644
+--- a/runner/cyc/hw_ppu.c
++++ b/runner/cyc/hw_ppu.c
+@@ -1031,8 +1031,22 @@ HW_ALWAYS_INLINE void half_dot_status(void)
+  * state machine) clears it. The general path runs otherwise, and
+  * native/--interp-only comparisons cover both. */
+ 
+-enum { DOT_UNKNOWN, DOT_BLANK, DOT_GENERAL, DOT_RENDER, DOT_IDLE };
+-static uint8_t dot_kind;
++enum { DOT_UNKNOWN, DOT_BLANK, DOT_GENERAL, DOT_RENDER, DOT_IDLE, DOT_SPRITE };
++static uint8_t dot_kind;
++static bool sprite_fetch_enabled = true;
++uint64_t ppu_native_fetch_cycles, ppu_native_fetch_jobs;
++static bool sprite_fetch_jobs_enabled = true;
++void hw_native_set_sprite_fetch_jobs(bool enabled)
++{
++    hw_native_flush();
++    sprite_fetch_jobs_enabled = enabled;
++}
++void hw_native_set_sprite_fetch(bool enabled)
++{
++    hw_native_flush();
++    sprite_fetch_enabled = enabled;
++    dot_kind = DOT_UNKNOWN;
++}
+ 
+ /* Nonvisible, settled dots have neither pixels nor VRAM/OAM fetches. Keep
+  * scanline/frame/status edges and register latch settling on the coupled
+@@ -1316,6 +1330,110 @@ static bool render_span_ready(void)
+              ppu.vset | ppu.vblank_pending) && ppu.vset_latch1;
+ }
+ 
++/* Visible scanlines after the final output pixel and horizontal scroll
++ * copy, before background prefetch. CPU register accesses invalidate this
++ * proof just as they do the visible render span. Pre-render vertical copies,
++ * PAL refresh, unsettled writes and data-port transactions remain general. */
++static bool sprite_fetch_ready(void)
++{
++    return sprite_fetch_enabled && !hw_pal() && ppu.scanline < 240 &&
++           ppu.dot >= 260 && ppu.dot < 320 && rendering() && sm_rest &&
++           ppu.render_count == 5 && ppu.eval_bg == ppu.show_bg &&
++           ppu.eval_spr == ppu.show_spr && ppu.instant_bg == ppu.show_bg &&
++           ppu.instant_spr == ppu.show_spr &&
++           !(ppu.skipped_dot | ppu.w2001_delay | ppu.w2001_oam_delay |
++             ppu.w2001_emph_delay | ppu.w2005_delay | ppu.w2006_delay |
++             ppu.oamc_disabled | ppu.oamc_disabled_now | ppu.oamc_pending |
++             ppu.palc_disabled | ppu.palc_v_left | ppu.read2002 |
++             ppu.vset | ppu.vblank_pending | ppu.oam2_reset) &&
++           ppu.vset_latch1;
++}
++
++static void sprite_fetch_dot(void)
++{
++    ++ppu.dot;
++    if (hw_zapper.port) ++hw_zapper.dots;
++    ppu.overflow_late = ppu.overflow;
++    ppu.blnk_latch = ppu.pal_enable = 0;
++    ppu.rd = ((ppu.dot - 1) & 1) != 0;
++    hw_cart_ppu_rd(ppu.rd != 0);
++    ppu.ale = !ppu.rd;
++    ppu.oam_latch = ppu.oam_buffer;
++    ppu.copy_v = 0;
++    eval_load();
++#ifdef NESRECOMP_CYCLE_HDPACK
++    cyc_hdpack_clock();
++#endif
++    if (cyc_background_enabled) {
++        cyc_background_pipe[3] = cyc_background_pipe[2];
++        cyc_background_pipe[2] = cyc_background_pipe[1];
++        cyc_background_pipe[1] = cyc_background_pipe[0];
++    }
++    ppu.color[3] = ppu.color[2];
++    ppu.color[2] = ppu.color[1];
++    ppu.color[1] = ppu.color[0];
++    io_bus_decay();
++}
++
++static void sprite_fetch_half_dot(void)
++{
++    if (ppu.commit) bg_commit();
++    ppu.oam_buffer = ppu.oam_buffer_in;
++    half_dot_status();
++    ppu.ale = ppu.wr = 0;
++}
++
++/* Eight unobserved dots load one output unit. Admission excludes mapper
++ * observers, read-triggered banks, CHR/CIRAM aliasing and recording. Retain
++ * the exact connector and latch state at the boundary, including reads of
++ * pattern bytes for out-of-range sprites and secondary-OAM wrap/full rules. */
++static void sprite_fetch_job(unsigned align)
++{
++    if (align < 2) sprite_fetch_half_dot();
++    unsigned slot = (unsigned)ppu.dot / 8u - 32u;
++    uint8_t y = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t tile = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t attr = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    uint8_t x = ppu.oam2[ppu.oam2_addr]; oam2_increment();
++    ppu.sprite_row = (uint16_t)((ppu.scanline & 255) - y);
++    ppu.load_tile = tile; ppu.load_attr = attr;
++    ppu.spr_attr[slot] = attr; ppu.spr_x[slot] = x;
++    uint16_t nt = (uint16_t)(0x2000 | (ppu.v & 0x0fff));
++    ppu.fetch_data = ppu.ciram[(nt & 0x3ff) | hw_cart_ciram_a10(nt)];
++    unsigned row = ppu.sprite_row & 7u;
++    if (attr & 0x80) row = 7u - row;
++    uint16_t pattern;
++    if (ppu.sprite16)
++        pattern = (uint16_t)(((tile & 1u) << 12) | ((tile & 0xfeu) << 4) |
++                            row | (((ppu.sprite_row & 8u) ^ ((attr & 0x80) ? 8u : 0u)) << 1));
++    else pattern = (uint16_t)((ppu.sprite_table ? 0x1000 : 0) | (tile << 4) | row);
++    uint8_t lo = hw_cart.chr[hw_cart_chr_index(pattern)];
++    uint8_t hi = hw_cart.chr[hw_cart_chr_index(pattern | 8u)];
++    ppu.par_chr = pattern | 8u;
++    ppu.octal_latch = (uint8_t)ppu.par_chr;
++    ppu.vbus = (uint16_t)((ppu.par_chr & 0xff00) | hi);
++    if (attr & 0x40) { lo = flip_bits(lo); hi = flip_bits(hi); }
++    bool in_range = ppu.sprite_row < (ppu.sprite16 ? 16u : 8u);
++    ppu.spr_lo[slot] = in_range ? lo : 0;
++    ppu.spr_hi[slot] = in_range ? hi : 0;
++    ppu.oam_addr = 0; ppu.cur_has_s0 = ppu.next_has_s0;
++    ppu.oam_latch = ppu.oam_buffer = ppu.oam_buffer_in = x;
++    ppu.blnk_latch = ppu.pal_enable = ppu.copy_v = ppu.ale = ppu.wr = ppu.commit = 0;
++    ppu.rd = 1;
++    ppu.overflow_late = ppu.overflow;
++    ppu.s0hit = ppu.s0hit_late = ppu.s0hit || ppu.s0hit_pending1 || ppu.s0hit_pending2;
++    ppu.s0hit_pending1 = ppu.s0hit_pending2 = 0;
++    ppu.vset_latch2 = 0;
++    for (unsigned i = 1; i < 4; ++i) {
++        ppu.color[i] = ppu.color[0];
++        if (cyc_background_enabled) cyc_background_pipe[i] = cyc_background_pipe[0];
++    }
++    ppu.dot += 8;
++    if (hw_zapper.port) hw_zapper.dots += 8;
++    io_bus_decay_span(8);
++    ++ppu_native_fetch_jobs;
++}
++
+ static inline void render_span_prefix(void)
+ {
+     ++ppu.dot;
+@@ -1411,13 +1529,16 @@ void ppu_dot(void)
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+     } else if (dot_kind == DOT_RENDER && ppu.dot < 253) {
+         render_span_dot();
++    } else if (dot_kind == DOT_SPRITE && ppu.dot < 320) {
++        sprite_fetch_dot();
+ #endif
+     } else {
+         general_dot();
+         if (idle_span_ready()) dot_kind = DOT_IDLE;
+         else if (!rendering()) dot_kind = DOT_UNKNOWN;
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+-        else dot_kind = render_span_ready() ? DOT_RENDER : DOT_GENERAL;
++        else dot_kind = sprite_fetch_ready() ? DOT_SPRITE :
++                        render_span_ready() ? DOT_RENDER : DOT_GENERAL;
+ #endif
+     }
+     hw_cart_ppu_addr(ppu.vbus);
+@@ -1431,12 +1552,15 @@ void ppu_half_dot(void)
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+     } else if (dot_kind == DOT_RENDER) {
+         render_span_half_dot();
++    } else if (dot_kind == DOT_SPRITE) {
++        sprite_fetch_half_dot();
+ #endif
+     } else {
+         general_half_dot();
+         if (idle_span_ready()) dot_kind = DOT_IDLE;
+         else if (!rendering()) dot_kind = DOT_UNKNOWN;
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
++        else if (sprite_fetch_ready()) dot_kind = DOT_SPRITE;
+         else if (render_span_ready()) dot_kind = DOT_RENDER;
+ #endif
+     }
+@@ -1460,6 +1584,15 @@ static void render_clock_dot(void)
+ unsigned ppu_native_interval_limit(void)
+ {
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
++    if (hw_pal()) {
++        /* From tick 1 to the next tick 1, N CPU cycles produce
++         * floor((phase + 16*N)/5) dots. Keep every edge in the visible span. */
++        if (dot_kind != DOT_RENDER || ppu.dot >= 249) return 0;
++        return (5u * (249u - ppu.dot) + 4u - hw_region_timing.phase) / 16u;
++    }
++    if (dot_kind == DOT_SPRITE && !hw_cart.watch_ppu_addr &&
++        !hw_cart.m.pattern_pending && ppu.dot < 318)
++        return (320u - ppu.dot) / 3u;
+     if (dot_kind == DOT_IDLE && ppu.dot < 334)
+         return (337u - ppu.dot) / 3u;
+     /* MMC3 can clock an IRQ at the first pattern fetch after a long A12-low
+@@ -1660,14 +1793,17 @@ static void raster_tile(const uint8_t *sprite, unsigned align,
+     ppu.blnk_latch = ppu.pal_enable = ppu.copy_v = ppu.ale = ppu.wr = 0;
+     ppu.rd = 1;
+     unsigned out = (unsigned)ppu.scanline * 256 + first - 4;
+-    unsigned emphasis = ppu.emphasis << 6;
++    unsigned emphasis = ppu.emphasis;
++    /* PAL wires the red/green emphasis bits in the opposite order. Keep
++     * raster output and background capture consistent with output_pixel. */
++    if (hw_pal()) emphasis = (emphasis & 4) | ((emphasis & 1) << 1) | ((emphasis & 2) >> 1);
+     unsigned mask = ppu.greyscale ? 0x30 : 0x3f;
+     for (unsigned i = 0; i < 8; ++i) {
+-        uint16_t c = (uint16_t)((color[i] & mask) | emphasis);
++        uint16_t c = (uint16_t)((color[i] & mask) | (emphasis << 6));
+         hw_frame_index[out + i] = c;
+         if (cyc_background_enabled) {
+             cyc_background_pipe[3] = background[i];
+-            cyc_render_background_output(out + i, ppu.emphasis, ppu.greyscale != 0);
++            cyc_render_background_output(out + i, emphasis, ppu.greyscale != 0);
+         }
+         if (hw_zapper.port) {
+             ++hw_zapper.dots;
+@@ -1761,9 +1897,92 @@ static void run_sprite_output_span(unsigned cycles, unsigned align)
+ }
+ #endif
+ 
++#if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
++/* The machine proves a stable visible PAL interval on a non-clocked board.
++ * Dots occur at phase zero and half-dots at phase two of each five ticks;
++ * tick zero was consumed on entry and belongs to the next cycle on exit.
++ * Preserve each edge's hw.tick; region phase/cycle counters belong to machine.
++ * Sprite-row reuse is the same pure product as the NTSC interval executor. */
++static bool pal_raster_enabled = true;
++void hw_native_set_pal_raster(bool enabled)
++{
++    hw_native_flush();
++    pal_raster_enabled = enabled;
++}
++
++static void run_pal_render_interval(unsigned cycles)
++{
++    unsigned phase = hw_region_timing.phase, ticks = cycles * 16u;
++    unsigned dots = (phase + ticks) / 5u;
++    unsigned dot_tick = 5u - phase;
++    unsigned half_tick = phase < 2u ? 2u - phase : 7u - phase;
++    bool prepared = cycles >= 8;
++#ifdef NESRECOMP_CYCLE_HDPACK
++    if (hdpack_recording()) prepared = false;
++#endif
++    SpriteOutputSpan span;
++    unsigned pixel = 0;
++    if (prepared) prepare_sprite_output(&span, dots);
++    while (dot_tick <= ticks || half_tick <= ticks) {
++#if NESRECOMP_PPU_HLE && !NESRECOMP_PPU_RASTER_REFERENCE
++        /* At a tile boundary after its preceding half-dot, the eight-dot
++         * raster job has the same event order as NTSC's dot-first case.
++         * PAL consumes 40 master ticks. Include the last half-dot; leave
++         * fractional leading/trailing edges to the ordinary loop below.
++         * Only the qualified PAL boards without PPU observers use this. */
++        if (pal_raster_enabled && prepared && !(ppu.dot & 7) &&
++            !ppu.oam2_reset && !ppu.commit && half_tick == dot_tick + 2u &&
++            half_tick + 35u <= ticks && !hw_cart.watch_ppu_addr &&
++            !hw_cart.m.pattern_pending && !hw_cart.chr_ciram) {
++            raster_tile(span.pixel + pixel, 2, hw.cycles, pixel);
++            pixel += 8; dot_tick += 40; half_tick += 40;
++            continue;
++        }
++#endif
++        if (half_tick < dot_tick) {
++            hw.tick = (uint8_t)((half_tick & 15u) + 1u);
++            render_span_half_dot(); half_tick += 5u;
++        } else {
++            hw.tick = (uint8_t)((dot_tick & 15u) + 1u);
++            if (prepared) render_prepared_sprite_dot(span.pixel[pixel++]);
++            else render_clock_dot();
++            dot_tick += 5u;
++        }
++    }
++    if (prepared) {
++        memcpy(ppu.spr_x, span.x, 8); memcpy(ppu.spr_lo, span.lo, 8); memcpy(ppu.spr_hi, span.hi, 8);
++        ++ppu_native_sprite_spans; ppu_native_sprite_dots += dots;
++    }
++    hw.tick = 1;
++}
++#else
++void hw_native_set_pal_raster(bool enabled) { (void)enabled; }
++#endif
++
+ void ppu_native_interval_run(unsigned cycles, unsigned align)
+ {
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
++    if (hw_pal()) { run_pal_render_interval(cycles); return; }
++    if (dot_kind == DOT_SPRITE) {
++        /* Admission excludes address observers: no intermediate mapper
++         * timestamp, IRQ or PRG mapping deadline can be hidden here. */
++        bool jobs = sprite_fetch_jobs_enabled && !hw_cart.chr_ciram &&
++                    (hw_cart.mapper == 0 || hw_cart.mapper == 1 || hw_cart.mapper == 66);
++#ifdef NESRECOMP_CYCLE_HDPACK
++        if (hdpack_recording()) jobs = false;
++#endif
++        for (unsigned i = 0, dots = cycles * 3u; i < dots;) {
++            if (jobs && !(ppu.dot & 7) && dots - i >= 8 && !ppu.commit) {
++                sprite_fetch_job(align); i += 8;
++            } else {
++                if (align < 2) { sprite_fetch_half_dot(); sprite_fetch_dot(); }
++                else { sprite_fetch_dot(); sprite_fetch_half_dot(); }
++                ++i;
++            }
++        }
++        ppu_native_fetch_cycles += cycles;
++        return;
++    }
+     if (dot_kind == DOT_IDLE) {
+         unsigned dots = cycles * 3u;
+         ppu.dot += dots;
+@@ -1853,6 +2072,52 @@ void ppu_native_interval_run(unsigned cycles, unsigned align)
+ #endif
+ }
+ 
++/* PAL has five divider phases and a 16-master-clock CPU cycle. During a
++ * stable visible render span, choose its schedule once instead of dispatching
++ * every dot/half dot through ppu_dot/ppu_half_dot. No guest event is skipped:
++ * retain hw.tick, mapper pin transitions and pre-edge NMI/IRQ sampling. The
++ * tick-zero CPU/APU/cartridge work has already run in the machine. Delayed
++ * register traffic, span boundaries and PAL forced OAM refresh stay generic.
++ * NESRECOMP_PAL_PPU_TAIL_REFERENCE keeps the previous PAL dispatch for A/B. */
++#ifndef NESRECOMP_PAL_PPU_TAIL_REFERENCE
++#define NESRECOMP_PAL_PPU_TAIL_REFERENCE 0
++#endif
++bool ppu_clock_pal_cpu_tail(unsigned phase)
++{
++#if (NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE) && !NESRECOMP_PAL_PPU_TAIL_REFERENCE
++    /* Fifteen master ticks advance exactly three dots. Keep all events
++     * strictly inside the cached render span (dot < 253). */
++    if (dot_kind != DOT_RENDER || ppu.dot >= 250) return false;
++#define PAL_RENDER_STEP(k, phase) do { \
++    hw.tick = (k) + 1; \
++    if ((k) == 6) cpu_nmi_input(ppu_nmi_output()); \
++    else if ((k) == 9) apu_sample_irq(); \
++    if (((phase) + (k)) % 5 == 0) render_clock_dot(); \
++    else if (((phase) + (k)) % 5 == 2) render_span_half_dot(); \
++} while (0)
++#define PAL_RENDER_TAIL(phase) do { \
++    PAL_RENDER_STEP(1, phase); PAL_RENDER_STEP(2, phase); PAL_RENDER_STEP(3, phase); \
++    PAL_RENDER_STEP(4, phase); PAL_RENDER_STEP(5, phase); PAL_RENDER_STEP(6, phase); \
++    PAL_RENDER_STEP(7, phase); PAL_RENDER_STEP(8, phase); PAL_RENDER_STEP(9, phase); \
++    PAL_RENDER_STEP(10, phase); PAL_RENDER_STEP(11, phase); PAL_RENDER_STEP(12, phase); \
++    PAL_RENDER_STEP(13, phase); PAL_RENDER_STEP(14, phase); PAL_RENDER_STEP(15, phase); \
++} while (0)
++    switch (phase) {
++    case 0: PAL_RENDER_TAIL(0); break;
++    case 1: PAL_RENDER_TAIL(1); break;
++    case 2: PAL_RENDER_TAIL(2); break;
++    case 3: PAL_RENDER_TAIL(3); break;
++    default: PAL_RENDER_TAIL(4); break;
++    }
++#undef PAL_RENDER_TAIL
++#undef PAL_RENDER_STEP
++    return true;
++#else
++    (void)phase;
++    return false;
++#endif
++}
++
+ bool ppu_clock_cpu_tail(unsigned align)
+ {
+ #if NESRECOMP_PPU_HLE || !NESRECOMP_PPU_LLE_REFERENCE
+@@ -2076,6 +2341,7 @@ void ppu_state_reloaded(void)
+ void ppu_power_on(void)
+ {
+     ppu_native_sprite_spans = ppu_native_sprite_dots = 0;
++    ppu_native_fetch_cycles = ppu_native_fetch_jobs = 0;
+     memset(&ppu, 0, sizeof(ppu));
+     sm_rest = false;
+     dot_kind = DOT_UNKNOWN;
 diff --git a/runner/cyc/ppu_hle_kernel.h b/runner/cyc/ppu_hle_kernel.h
 index f8699da..b3c7902 100644
 --- a/runner/cyc/ppu_hle_kernel.h
@@ -1204,6 +1958,226 @@ index 7d5c677..acf3ec7 100644
      CAPTURE_FILE "${NESRECOMP_CYCLE_CAPTURES}"
 +    HARDWARE_PROFILE "${NESRECOMP_HARDWARE_PROFILE}" OPTIMIZATION_MODULES ${NESRECOMP_OPTIMIZATION_MODULES}
      RECOMPILER "${NESRECOMP_HOST_COMPILER}" BIOS "${NESRECOMP_FDS_BIOS}" ${options})
+diff --git a/runner/cyc/tests/masked_irq_probe.c b/runner/cyc/tests/masked_irq_probe.c
+new file mode 100644
+index 0000000..08ef7ce
+--- /dev/null
++++ b/runner/cyc/tests/masked_irq_probe.c
+@@ -0,0 +1,102 @@
++/* Held frame IRQ: compare compiled-cycle helpers against the coupled clock.
++ * Exercise I changes at their real CLI/SEI/PLP/RTI bus-cycle positions. */
++#include "hw_internal.h"
++#include "cpu6502.h"
++#include "cyc_state.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++static void check(bool ok, const char *why) {
++    if (!ok) { fprintf(stderr, "FAIL: %s\n", why); exit(1); }
++}
++static void bus(uint16_t addr, uint8_t value, bool write) {
++    hw_cycle_start(addr, write ? HW_WRITE : HW_READ);
++    if (write) hw_write(addr, value); else (void)hw_read(addr);
++    hw_cycle_finish(false);
++}
++static void record(unsigned n) {
++    hw_native_end();
++    printf("%u %016llx %016llx I=%u irq=%u nmi=%u\n", n,
++        (unsigned long long)cyc_hw_state_hash(), (unsigned long long)cyc_mem_state_hash(),
++        cpu.i, cpu.do_irq, cpu.do_nmi);
++}
++static void nop_then_irq(void) {
++    check(!cpu_fetch_rom(0x8101, 0xea), "CLI/PLP delays IRQ one instruction");
++    (void)cpu_read_rom(0x8102, 0xea, CYC_POLL | CYC_DONE);
++    check(cpu_fetch_rom(0x8102, 0xea), "IRQ recognized after delayed instruction");
++}
++int main(int argc, char **argv) {
++    bool candidate = argc > 1 && !strcmp(argv[1], "candidate");
++    static uint8_t image[16 + 32768 + 8192];
++    memcpy(image, "NES\032", 4); image[4] = 2; image[5] = 1;
++    for (size_t i = 16; i < sizeof(image); ++i) image[i] = (uint8_t)(i * 37u + (i >> 3));
++    for (unsigned align = 0; align < 4; ++align) {
++        check(cyc_load_ines(image, sizeof(image)), "fixture");
++        cyc_power_on((uint8_t)align);
++        check(cyc_audio_enable(48000), "audio");
++        cpu.i = 1; cpu.do_reset = cpu.power_on = 0;
++        for (unsigned i = 0; i < 60000; ++i) bus(0, 0, false);
++        bus(0x2001, 0x1e, true);
++        bus(0x4017, 0x00, true);
++        hw_native_set_masked_irq(true);
++        unsigned wait;
++        for (wait = 0; wait < 100000; ++wait) {
++            if (hw.irq_line && apu_native_masked_irq_ready() && hw_native_interval_limit() >= 20) break;
++            bus(0, 0, false);
++        }
++        check(wait < 100000, "reach held IRQ and stable render span");
++        check(hw.irq_line && cpu.i && !cpu.do_irq, "masked pending level");
++        CycSnapshot *snapshot = cyc_snapshot_new(); check(snapshot != NULL, "snapshot");
++        cyc_snapshot_take(snapshot);
++        printf("align %u\n", align);
++        for (unsigned kind = 0; kind < 8; ++kind) {
++            cyc_snapshot_restore(snapshot);
++            hw_native_set_masked_irq(candidate);
++            if (kind == 2) cpu.i = 0; /* SEI begins unmasked. */
++            hw_native_begin();
++            check(!cpu_fetch_rom(0x8100, 0xea), "initial opcode not interrupted");
++            switch (kind) {
++            case 0: /* Stay masked across multiple complete frame sequences. */
++                for (unsigned i = 0; i < 80000; ++i) {
++                    (void)cpu_read_rom(0x8101, 0xea, CYC_POLL | CYC_DONE);
++                    check(!cpu_fetch_rom(0x8100, 0xea), "masked IRQ not taken");
++                }
++                break;
++            case 1: /* CLI: poll before clearing I. */
++                (void)cpu_read_rom(0x8101, 0xea, CYC_POLL | CYC_DONE); cpu.i = 0;
++                nop_then_irq(); break;
++            case 2: /* SEI: a sampled IRQ survives setting I. */
++                (void)cpu_read_rom(0x8101, 0xea, CYC_POLL | CYC_DONE); cpu.i = 1;
++                check(cpu_fetch_rom(0x8101, 0xea), "SEI retains sampled IRQ"); break;
++            case 3: /* PLP: final-cycle poll sees old I. */
++                (void)cpu_read_rom(0x8101, 0xea, 0);
++                (void)cpu_read(0x1fd, 0); hw.ram[0x1fe] = 0x20;
++                cpu_set_p(cpu_read(0x1fe, CYC_POLL | CYC_DONE));
++                nop_then_irq(); break;
++            case 4: /* RTI: restored I precedes the final poll. */
++                (void)cpu_read_rom(0x8101, 0xea, 0);
++                (void)cpu_read(0x1fc, 0); hw.ram[0x1fd] = 0x20;
++                cpu_set_p(cpu_read(0x1fd, 0));
++                (void)cpu_read(0x1fe, 0);
++                (void)cpu_read(0x1ff, CYC_POLL | CYC_DONE);
++                check(cpu_fetch_rom(0x8101, 0xea), "RTI polls restored I"); break;
++            case 5: /* Reading status schedules IRQ clear. */
++                (void)cpu_read(0x4015, CYC_POLL | CYC_DONE);
++                for (unsigned i = 0; i < 40; ++i) (void)cpu_read(0, CYC_POLL | CYC_DONE);
++                check(!hw.irq_line, "status read clears IRQ"); break;
++            case 6: /* Register write resets sequencer and inhibits IRQ. */
++                cpu_write(0x4017, 0xc0, CYC_POLL | CYC_DONE);
++                for (unsigned i = 0; i < 40; ++i) (void)cpu_read(0, CYC_POLL | CYC_DONE);
++                check(!hw.irq_line, "inhibit clears IRQ"); break;
++            case 7: /* DMA invalidates credit and retains original stalls. */
++                cpu_write(0x4014, 2, CYC_POLL | CYC_DONE);
++                (void)cpu_read_rom(0x8101, 0xea, CYC_POLL | CYC_DONE);
++                break;
++            }
++            record(kind);
++        }
++        check(!candidate || hw_native_interval_cycles > 1000, "held IRQ path actually used");
++        cyc_snapshot_free(snapshot);
++    }
++    return 0;
++}
+diff --git a/runner/cyc/tests/native_interval_probe.c b/runner/cyc/tests/native_interval_probe.c
+index 14f4933..a5f1de2 100644
+--- a/runner/cyc/tests/native_interval_probe.c
++++ b/runner/cyc/tests/native_interval_probe.c
+@@ -357,7 +357,7 @@ int main(int argc, char **argv)
+             check(cyc_set_region(CYC_REGION_PAL), "set PAL");
+             cyc_power_on((uint8_t)align);
+             check(hw_pal(), "PAL active");
+-            check(!hw_native_interval_limit(), "PAL refusal");
++            check(!hw_native_interval_limit(), "PAL unsettled span refusal");
+         }
+     }
+     return 0;
+diff --git a/runner/cyc/tests/pal_interval_probe.c b/runner/cyc/tests/pal_interval_probe.c
+new file mode 100644
+index 0000000..3793139
+--- /dev/null
++++ b/runner/cyc/tests/pal_interval_probe.c
+@@ -0,0 +1,93 @@
++/* PAL cursor versus coupled clock: five phases, fixed-PRG boards, CHR-bank
++ * writes, delayed PPU I/O, both DMAs, APU modes and snapshot continuation. */
++#include "hw_internal.h"
++#include "cpu6502.h"
++#include "cyc_state.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++static void check(bool ok, const char *why) { if (!ok) { fprintf(stderr,"FAIL: %s\n",why); exit(1); } }
++static void access_bus(uint16_t a, uint8_t v, bool w) {
++    hw_cycle_start(a,w?HW_WRITE:HW_READ); if(w)hw_write(a,v);else(void)hw_read(a);hw_cycle_finish(false);
++}
++static void stimulus(unsigned i) {
++    (void)cpu_fetch_rom(0x8123,0xff);
++    uint16_t a=(uint16_t)(i&0x7ff);
++    uint8_t v=cpu_read(a,CYC_POLL);
++    cpu_write(a,(uint8_t)(v+i),CYC_DONE);
++    (void)cpu_read_rom(0x8124,0xff,CYC_POLL|CYC_DONE);
++    switch(i%1031) {
++    case 0: cpu_write(0x2001,(i&2048)?0x1e:0,CYC_DONE);break;
++    case 1: cpu_write(0x2000,(uint8_t)((i>>5)&0x7f),CYC_DONE);break;
++    case 2: cpu_write(0x2005,(uint8_t)i,CYC_DONE);break;
++    case 3: cpu_write(0x2005,(uint8_t)(i>>4),CYC_DONE);break;
++    case 4: cpu_write(0x4014,2,CYC_DONE);break;
++    case 5: cpu_write(0x4017,(i&4096)?0:0xc0,CYC_DONE);break;
++    case 6: cpu_write(0x4010,0x8f,CYC_DONE);break;
++    case 7: cpu_write(0x4013,1,CYC_DONE);break;
++    case 8: cpu_write(0x4015,(i&8192)?0x1f:0x0f,CYC_DONE);break;
++    case 9: (void)cpu_read(0x4015,CYC_POLL|CYC_DONE);break;
++    case 10:(void)cpu_read(0x2002,CYC_POLL|CYC_DONE);break;
++    case 11:cpu_write(0x2006,0x20,CYC_DONE);break;
++    case 12:cpu_write(0x2006,(uint8_t)i,CYC_DONE);break;
++    case 13:cpu_write(0x2007,(uint8_t)i,CYC_DONE);break;
++    case 14:(void)cpu_read(0x2007,CYC_POLL|CYC_DONE);break;
++    case 15:if(hw_cart.mapper==3)cpu_write(0x8000,(uint8_t)((i>>10)&3),CYC_DONE);break;
++    }
++}
++int main(int argc,char **argv) {
++    bool candidate=argc>1&&!strcmp(argv[1],"candidate");
++    bool raster_reference=argc>1&&!strcmp(argv[1],"raster-reference");
++    static uint8_t image[16+32768+32768];
++    memcpy(image,"NES\032",4);image[4]=2;image[5]=4;
++    memset(image+16,0xff,32768);
++    for(size_t i=16+32768;i<sizeof(image);++i)image[i]=(uint8_t)(i*37+(i>>3)+17*(i>>13));
++    for(unsigned board=0;board<2;++board)for(unsigned phase=0;phase<5;++phase){
++        image[6]=board?0x30:0;
++        check(cyc_load_ines(image,sizeof(image)),"load");check(cyc_set_region(CYC_REGION_PAL),"PAL");
++        cyc_power_on((uint8_t)phase);check(cyc_audio_enable(48000),"audio");
++        check(cyc_zapper_attach(2),"Zapper");cyc_set_zapper(120,100,true);
++        /* Distinct banks, palette colors and OAM DMA data expose raster
++         * fetch, priority, scrolling and sprite-zero differences. */
++        for(unsigned i=0;i<32;++i) ppu.palette[i]=(uint8_t)((i*7)&63);
++        for(unsigned i=0;i<sizeof(ppu.ciram);++i) ppu.ciram[i]=(uint8_t)(i*13+(i>>5));
++        for(unsigned i=0;i<256;++i) hw.ram[0x200+i]=(uint8_t)(i*37+(i>>2));
++        cpu.i=1;cpu.do_reset=cpu.power_on=0;
++        for(unsigned i=0;i<40000;++i)access_bus(0,0,false);
++        access_bus(0x4017,0xc0,true);access_bus(0x4015,0x0f,true);
++        for(unsigned i=0;i<16;++i)access_bus((uint16_t)(0x4000+i),(uint8_t)(i*31+7),true);
++        access_bus(0x2001,0x1e,true);
++        hw_native_set_pal_intervals(candidate || raster_reference);
++        hw_native_set_pal_raster(candidate);
++        uint64_t tiles_before=ppu_native_raster_tiles, cycles_before=hw_native_interval_cycles;
++        printf("board=%u phase=%u\n",board?3:0,phase);
++        hw_native_begin();
++        for(unsigned i=1;i<=50000;++i){
++            stimulus(i);
++            if(i%127==0){
++                hw_native_end();
++                printf("%u %016llx %016llx %u%u%u\n",i,(unsigned long long)cyc_hw_state_hash(),
++                    (unsigned long long)cyc_mem_state_hash(),cpu.do_irq,cpu.do_nmi,cpu.nmi_edge);
++                hw_native_begin();
++            }
++            if(i==20000){
++                CycSnapshot *s=cyc_snapshot_new();check(s!=NULL,"snapshot");cyc_snapshot_take(s);
++                for(unsigned j=60000;j<60313;++j)stimulus(j);
++                hw_native_end();uint64_t h=cyc_hw_state_hash(),m=cyc_mem_state_hash();
++                cyc_snapshot_restore(s);hw_native_begin();
++                for(unsigned j=60000;j<60313;++j)stimulus(j);
++                hw_native_end();check(h==cyc_hw_state_hash()&&m==cyc_mem_state_hash(),"snapshot replay");
++                cyc_snapshot_free(s);hw_native_begin();
++            }
++        }
++        hw_native_end();check(!candidate||hw_native_interval_cycles-cycles_before>1000,"PAL batching exercised");
++#if NESRECOMP_PPU_HLE && !NESRECOMP_PPU_RASTER_REFERENCE
++        check(!candidate || ppu_native_raster_tiles > tiles_before, "PAL raster exercised");
++        check(candidate || ppu_native_raster_tiles == tiles_before, "reference has no PAL raster");
++#endif
++        int16_t pcm[8192];size_t n=cyc_audio_read(pcm,8192);uint64_t h=1469598103934665603ULL;
++        for(size_t i=0;i<n;++i){h=(h^(uint8_t)pcm[i])*1099511628211ULL;h=(h^(uint8_t)((uint16_t)pcm[i]>>8))*1099511628211ULL;}
++        printf("pcm %zu %016llx\n",n,(unsigned long long)h);
++    }
++    return 0;
++}
 diff --git a/runner/cyc/tests/ppu_kernel_selftest.c b/runner/cyc/tests/ppu_kernel_selftest.c
 index 0f3185c..0ef28a8 100644
 --- a/runner/cyc/tests/ppu_kernel_selftest.c
@@ -1279,6 +2253,150 @@ index 0000000..9fb2e32
 +    puts("Core profiler: sampling, calibration, scheduler-outlier resistance, estimates, reset and missing clock passed");
 +    return 0;
 +}
+diff --git a/runner/cyc/tests/raster_interval_probe.c b/runner/cyc/tests/raster_interval_probe.c
+index e7129da..ec7abfa 100644
+--- a/runner/cyc/tests/raster_interval_probe.c
++++ b/runner/cyc/tests/raster_interval_probe.c
+@@ -42,9 +42,22 @@ static uint64_t background_hash(void)
+     }
+     return 0;
+ }
+-static void replay_route(bool reference)
++static void advance_cycles(unsigned count, bool reference)
++{
++    while (count) {
++        unsigned n = reference ? 0 : hw_native_interval_limit();
++        if (n > count) n = count;
++        if (n) {
++            hw.cpu_addr=0;hw.cpu_reading=hw.data_driven=1;
++            hw.data_bus=hw.internal_bus=hw.ram[0];hw_native_interval_run(n);
++            count -= n;
++        } else { bus_access(0,0,false); --count; }
++    }
++}
++static void replay_route(bool reference, bool sprite_fetch)
+ {
+     for (unsigned i=0;i<257;++i) {
++        if (sprite_fetch) { advance_cycles(13, reference); continue; }
+         bus_access(0,0,false);
+         unsigned n=hw_native_interval_limit();
+         if (n>12) n=12;
+@@ -57,17 +70,30 @@ static void replay_route(bool reference)
+ }
+ int main(int argc, char **argv)
+ {
+-    bool reference=argc>1 && !strcmp(argv[1],"--reference");
++    bool reference=false, pal=false, raster=true, sprite_fetch=false, fetch_jobs=true;
++    for (int i=1;i<argc;++i) {
++        if (!strcmp(argv[i],"--reference")) reference=true;
++        if (!strcmp(argv[i],"--pal")) pal=true;
++        if (!strcmp(argv[i],"--sprite-fetch")) sprite_fetch=true;
++        if (!strcmp(argv[i],"--no-sprite-fetch-jobs")) fetch_jobs=false;
++        if (!strcmp(argv[i],"--no-pal-raster")) raster=false;
++    }
++    hw_native_set_pal_raster(raster);
++    hw_native_set_sprite_fetch_jobs(fetch_jobs);
++    if (sprite_fetch) hw_native_set_sprite_fetch(!reference);
+     static uint8_t image[16+65536+16384];
+-    static const unsigned boards[]={0,1,4,66};
++    static const unsigned ntsc_boards[]={0,1,4,66}, pal_boards[]={0,3};
++    const unsigned *boards=pal?pal_boards:ntsc_boards;
++    unsigned board_count=pal?2:4, phase_count=pal?5:4;
+     memcpy(image,"NES\032",4);
+     for (size_t i=16;i<sizeof(image);++i) image[i]=(uint8_t)(i*37+(i>>3));
+-    for (unsigned ram=0;ram<2;++ram) for (unsigned board=0;board<4;++board) {
++    for (unsigned ram=0;ram<2;++ram) for (unsigned board=0;board<board_count;++board) {
+         unsigned mapper=boards[board];
+         image[4]=mapper>=4?4:2; image[5]=ram?0:(mapper>=4?2:1);
+         image[6]=(uint8_t)(mapper<<4); image[7]=(uint8_t)(mapper&0xf0);
+-        for (unsigned align=0;align<4;++align) {
++        for (unsigned align=0;align<phase_count;++align) {
+             check(cyc_load_ines(image,16+image[4]*16384u+image[5]*8192u),"load synthetic cart");
++            check(cyc_set_region(pal?CYC_REGION_PAL:CYC_REGION_NTSC),"select region");
+             cyc_power_on((uint8_t)align); cpu.do_reset=cpu.power_on=0;
+             check(cyc_audio_enable(align&1?48000:44100),"audio");
+             check(cyc_zapper_attach(2),"Zapper"); cyc_set_zapper(120,100,true);
+@@ -76,7 +102,8 @@ int main(int argc, char **argv)
+             uint64_t pcm=UINT64_C(1469598103934665603), samples=0;
+             printf("case %u %u %u\n",mapper,ram,align);
+             for (unsigned q=0;q<128;++q) {
+-                bus_access(0x2000,(q&1)?0x10:0,true);
++                bus_access(0x2000,(uint8_t)(((q&1)?0x10:0) |
++                    (sprite_fetch ? ((q&2)?0x20:0) | ((q&4)?8:0) : 0)),true);
+                 bus_access(0x2001,(uint8_t)((q%3==0?0x0a:q%3==1?0x14:0x1e)|((q&3)<<5)|(q&1)),true);
+                 if (mapper==4) {
+                     bus_access(0xe000,0,true); bus_access(0xc000,(uint8_t)(q&7),true);
+@@ -86,7 +113,11 @@ int main(int argc, char **argv)
+                 else if (mapper==66) bus_access(0x8000,(uint8_t)(q&0x11),true);
+                 unsigned limit=0,wait;
+                 for (wait=0;wait<100000;++wait) {
+-                    limit=hw_native_interval_limit(); if (limit>=12) break;
++                    if (sprite_fetch) {
++                        if (ppu.scanline < 240 && ppu.dot >= 258+(int)(q%16) && ppu.dot < 280) {
++                            limit=24; break;
++                        }
++                    } else { limit=hw_native_interval_limit(); if (limit>=12) break; }
+                     bus_access(0,0,false);
+                 }
+                 check(wait<100000,"reach stable raster interior");
+@@ -123,7 +154,20 @@ int main(int argc, char **argv)
+                 cyc_render_capture_background((q&1)!=0);
+                 for (unsigned i=0;i<4;++i) cyc_background_pipe[i]=(uint8_t)((q*13+i*17)&63);
+                 unsigned n=q%4==0?limit:1+(q%limit);
+-                if (reference) for (unsigned i=0;i<n;++i) bus_access(0,0,false);
++                if (sprite_fetch) {
++                    for (unsigned i=0;i<32;++i) ppu.oam2[i]=(uint8_t)(q*17+i*31);
++                    ppu.oam2_addr = (uint8_t)(q & 31);
++                    ppu.oam2_full = (q % 7) == 0;
++                    if (q%13==0) {
++                        bus_access(0x2006,(uint8_t)(q&0x3f),true);
++                        bus_access(0x2006,(uint8_t)(q*19),true);
++                        bus_access(0x2007,(uint8_t)(q*23),true);
++                    }
++                    if (q%5==0) bus_access(0x2005,(uint8_t)q,true);
++                    if (q%7==0) bus_access(0x2001,(uint8_t)(q*3),true);
++                    if (q%11==0) bus_access(0x2002,0,false);
++                    advance_cycles(n, reference);
++                } else if (reference) for (unsigned i=0;i<n;++i) bus_access(0,0,false);
+                 else {
+                     hw.cpu_addr=0; hw.cpu_reading=1; hw.data_driven=1;
+                     hw.data_bus=hw.internal_bus=hw.ram[0]; hw_native_interval_run(n);
+@@ -135,21 +179,31 @@ int main(int argc, char **argv)
+                 printf("%u %u %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %016" PRIx64 " %" PRIu64 "\n",
+                        q,n,cyc_hw_state_hash(),cyc_mem_state_hash(),background_hash(),pcm,samples);
+                 const char *dump=getenv("NESRECOMP_RASTER_DUMP_ROW");
+-                if (dump && strtoul(dump,NULL,10)==((ram*4+board)*4+align)*128+q)
++                if (dump && strtoul(dump,NULL,10)==((ram*board_count+board)*phase_count+align)*128+q)
+                     cyc_hw_state_dump(stderr);
+             }
+             uint8_t *state=NULL;size_t size=0;char error[256];
+             check(cyc_state_save(&state,&size,error,sizeof(error)),"save raster current build");
+-            replay_route(reference);
++            replay_route(reference, sprite_fetch);
+             uint64_t machine=cyc_hw_state_hash(), memory=cyc_mem_state_hash(), background=background_hash();
+             check(cyc_state_load(state,size,error,sizeof(error)),"restore raster current build");free(state);
+-            replay_route(reference);
++            replay_route(reference, sprite_fetch);
+             check(machine==cyc_hw_state_hash() && memory==cyc_mem_state_hash() && background==background_hash(),
+                   "current-build raster/frame/background replay");
++            if (sprite_fetch && !pal && !reference) {
++                if (hw_cart.watch_ppu_addr || !fetch_jobs)
++                    check(ppu_native_fetch_jobs == 0,"fetch job observer/reference fallback");
++                else check(ppu_native_fetch_jobs > 0,"fetch jobs used in every eligible board/alignment");
++            }
+         }
+     }
+ #if NESRECOMP_PPU_HLE
+-    if (!reference) check(ppu_native_raster_tiles>100,"whole raster job actually used");
++    if (!reference && sprite_fetch && !pal) {
++        check(ppu_native_fetch_cycles>20,"sprite fetch intervals actually used");
++        if (fetch_jobs) check(ppu_native_fetch_jobs>20,"whole sprite fetch jobs actually used");
++        else check(ppu_native_fetch_jobs==0,"sprite fetch jobs disabled for interval-only reference");
++    }
++    if (!sprite_fetch && !reference && (!pal || raster)) check(ppu_native_raster_tiles>100,"whole raster job actually used");
+ #endif
+     return 0;
+ }
 diff --git a/runner/switch/diagnostics.c b/runner/switch/diagnostics.c
 new file mode 100644
 index 0000000..514c9ae
@@ -1308,21 +2426,23 @@ index 0000000..514c9ae
 +void cyc_diagnostics_exit(int code) { fprintf(stderr, "exit=%d\n", code); }
 diff --git a/runner/switch/host.c b/runner/switch/host.c
 new file mode 100644
-index 0000000..6307008
+index 0000000..9126bed
 --- /dev/null
 +++ b/runner/switch/host.c
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,661 @@
 +/* Vanilla cartridge host. The shared cyc_host.c still owns ROM validation,
 + * power-on, session setup, battery storage and the application's only main. */
 +#include <SDL.h>
 +#include <errno.h>
 +#include <stdio.h>
++#include <stdarg.h>
 +#include <stdlib.h>
 +#include <string.h>
 +#include <sys/stat.h>
 +#include <unistd.h>
 +#ifdef __SWITCH__
 +#include <switch.h>
++#include <netinet/in.h>
 +#endif
 +#include "cyc_core.h"
 +#include "cyc_profiler.h"
@@ -1349,22 +2469,122 @@ index 0000000..6307008
 +static bool ready, storage_failed, suspended;
 +static long exit_after = -1;
 +static bool uncapped;
++static bool benchmark, benchmark_suite;
++static long benchmark_warmup = 300;
++static const char *replay_path;
 +static unsigned saves;
++static bool network_log;
++#ifdef __SWITCH__
++static bool sockets_ready;
++static int log_socket = -1;
++static bool romfs_ready;
++#endif
++
++/* Network output is opt-in and infrequent. Keep stderr's SD log intact. */
++static void runner_log(const char *format, ...)
++{
++    va_list ap;
++    va_start(ap, format);
++    if (network_log) {
++        va_list copy;
++        va_copy(copy, ap);
++        vfprintf(stdout, format, copy);
++        va_end(copy);
++        fflush(stdout);
++    }
++    vfprintf(stderr, format, ap);
++    va_end(ap);
++}
++
++/* Compare the region's shared-core policy; normal launches enable both. */
++static const char *comparison_policy(void)
++{
++    return cyc_region() == CYC_REGION_PAL ? "pal_raster" : "sprite_fetch_jobs";
++}
++static void comparison_set_enabled(bool enabled)
++{
++    if (cyc_region() == CYC_REGION_PAL) hw_native_set_pal_raster(enabled);
++    else hw_native_set_sprite_fetch_jobs(enabled);
++}
++
++static void report_platform(void)
++{
++#ifdef __SWITCH__
++    if (!network_log) return;
++    u32 cpu_hz = 0;
++    Result clock_result = clkrstInitialize();
++    if (R_SUCCEEDED(clock_result)) {
++        ClkrstSession session;
++        clock_result = clkrstOpenSession(&session, PcvModuleId_CpuBus, 3);
++        if (R_SUCCEEDED(clock_result)) {
++            clock_result = clkrstGetClockRate(&session, &cpu_hz);
++            clkrstCloseSession(&session);
++        }
++        clkrstExit();
++    }
++    runner_log("platform applet_type=%u operation_mode=%u performance_mode=%u cpu_hz=%u clock_result=0x%08X\n",
++        (unsigned)appletGetAppletType(), (unsigned)appletGetOperationMode(),
++        (unsigned)appletGetPerformanceMode(), cpu_hz, clock_result);
++#endif
++}
++static const char *sprite_kernel_name(void)
++{
++#if !NESRECOMP_PPU_HLE
++    return "unused";
++#elif defined(NESRECOMP_PPU_HLE_FORCE_PORTABLE)
++    return "portable";
++#elif defined(__aarch64__) && defined(__ARM_NEON)
++    return "neon";
++#elif defined(__x86_64__) || defined(_M_X64)
++    return "sse2";
++#else
++    return "portable";
++#endif
++}
 +typedef struct {
 +    Uint64 frames, emulation, audio, present, sleep;
++    Uint64 source_samples, queued_bytes, queue_polls, queue_empty_polls;
++    Uint32 queue_min, queue_max;
 +} FrameTimings;
++static void add_totals(FrameTimings *total, const FrameTimings *part)
++{
++    total->frames += part->frames;
++    total->emulation += part->emulation;
++    total->audio += part->audio;
++    total->present += part->present;
++    total->source_samples += part->source_samples;
++}
 +#if NESRECOMP_CORE_PROFILER
 +static uint64_t profile_clock(void) { return (uint64_t)SDL_GetPerformanceCounter(); }
 +#endif
-+static void report_timings(const FrameTimings *t, Uint64 elapsed, Uint64 frequency)
++static void report_timings(const FrameTimings *t, Uint64 elapsed, Uint64 frequency,
++                           Uint64 bytes_per_second)
 +{
 +    if (!t->frames || !elapsed) return;
 +    double per_frame = 1000.0 / (double)frequency / (double)t->frames;
-+    fprintf(stderr, "performance fps=%.2f frames=%llu emulation_ms=%.3f audio_ms=%.3f present_ms=%.3f wait_ms=%.3f\n",
++    runner_log("performance fps=%.2f frames=%llu emulation_ms=%.3f audio_ms=%.3f present_ms=%.3f wait_ms=%.3f\n",
 +        (double)t->frames * (double)frequency / (double)elapsed, (unsigned long long)t->frames,
 +        t->emulation * per_frame, t->audio * per_frame, t->present * per_frame, t->sleep * per_frame);
++    double wall_ms = 1000.0 * (double)elapsed / (double)frequency;
++    double produced_ms = 1000.0 * (double)t->source_samples / 48000.0;
++    double byte_ms = 1000.0 / (double)bytes_per_second;
++    runner_log("audio_supply produced_ms=%.2f wall_ms=%.2f ratio=%.4f queued_ms=%.2f "
++               "queue_empty_polls=%llu queue_polls=%llu queue_min_ms=%.2f queue_max_ms=%.2f\n",
++        produced_ms, wall_ms, produced_ms / wall_ms, t->queued_bytes * byte_ms,
++        (unsigned long long)t->queue_empty_polls, (unsigned long long)t->queue_polls,
++        t->queue_min * byte_ms, t->queue_max * byte_ms);
++    report_platform();
 +#if NESRECOMP_CORE_PROFILER
-+    cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
++    if (network_log) {
++        /* Reporting resets the sampler. Snapshot only host diagnostic state
++         * so both destinations receive the same report, with one final reset. */
++        CycProfileBin snapshot[CYC_PROFILE_COUNT];
++        memcpy(snapshot, cyc_profile_bins, sizeof(snapshot));
++        cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
++        memcpy(cyc_profile_bins, snapshot, sizeof(snapshot));
++        cyc_profiler_report(stdout, t->frames, frequency, t->emulation);
++        fflush(stdout);
++    } else cyc_profiler_report(stderr, t->frames, frequency, t->emulation);
 +#endif
 +}
 +#if defined(__SWITCH__) && CYC_SWITCH_SAVES
@@ -1410,8 +2630,14 @@ index 0000000..6307008
 +    return true;
 +}
 +
-+int cyc_switch_init(void)
++int cyc_switch_init(int argc, char **argv)
 +{
++    bool requested = false;
++    network_log = false;
++    for (int i = 1; i < argc; ++i) {
++        if (!strcmp(argv[i], "--nxlink-log")) requested = true;
++        if (!strcmp(argv[i], "--window-input") && i + 1 < argc) replay_path = argv[++i];
++    }
 +    if (!mkdirs(CYC_SWITCH_SAVES ? CYC_SWITCH_GAME_DIR "/saves" : CYC_SWITCH_GAME_DIR)) {
 +        cyc_sdl_error_box("Storage unavailable", "Cannot create the game's directory on the SD card.");
 +        return 0;
@@ -1420,11 +2646,32 @@ index 0000000..6307008
 +    if (chdir(CYC_SWITCH_GAME_DIR)) return 0;
 +    if (!freopen(CYC_SWITCH_GAME_DIR "/runtime.log", "w", stderr)) return 0;
 +    setvbuf(stderr, NULL, _IONBF, 0);
-+    fprintf(stderr, "Switch runner %s: saves=%s\n", CYC_SWITCH_VERSION, CYC_SWITCH_SAVES ? "enabled" : "disabled");
++#ifdef __SWITCH__
++    if (requested && __nxlink_host.s_addr) {
++        sockets_ready = R_SUCCEEDED(socketInitializeDefault());
++        if (sockets_ready) {
++            log_socket = nxlinkConnectToHost(true, false);
++            network_log = log_socket >= 0;
++            if (network_log) setvbuf(stdout, NULL, _IONBF, 0);
++        }
++    }
++#endif
++    runner_log("Switch runner %s: saves=%s network_log=%s requested=%u\n", CYC_SWITCH_VERSION,
++        CYC_SWITCH_SAVES ? "enabled" : "disabled", network_log ? "connected" : "off", requested);
++    report_platform();
 +    return 1;
 +}
 +
-+void cyc_switch_shutdown(void) { fflush(stderr); }
++void cyc_switch_shutdown(void)
++{
++    fflush(stderr);
++#ifdef __SWITCH__
++    if (romfs_ready) { romfsExit(); romfs_ready = false; }
++    if (log_socket >= 0) { fflush(stdout); close(log_socket); log_socket = -1; }
++    if (sockets_ready) { socketExit(); sockets_ready = false; }
++#endif
++    network_log = false;
++}
 +
 +int cyc_sdl_prelaunch(const char **rom_path, const char *bios, NesFdsHleAsk *hle,
 +                      const char **saved_bios)
@@ -1433,12 +2680,29 @@ index 0000000..6307008
 +    *rom_path = ROM_PATH;
 +    *hle = NES_FDS_HLE_ASK_NONE;
 +    *saved_bios = NULL;
++#ifdef __SWITCH__
++    if (replay_path && !strncmp(replay_path, "romfs:/", 7) && !romfs_ready) {
++        Result rc = romfsInit();
++        if (R_FAILED(rc)) {
++            runner_log("Cannot mount input assets: 0x%08X\n", rc);
++            return 2;
++        }
++        romfs_ready = true;
++    }
++#endif
 +    return 0;
 +}
 +void cyc_sdl_option(const char *name, const char *value)
 +{
 +    if (!strcmp(name, "--exit-after")) exit_after = strtol(value, NULL, 10);
 +    if (!strcmp(name, "--uncapped")) uncapped = true;
++    if (!strcmp(name, "--benchmark")) benchmark = true;
++    if (!strcmp(name, "--benchmark-suite")) benchmark_suite = benchmark = uncapped = true;
++    if (!strcmp(name, "--benchmark-warmup")) {
++        char *end;
++        long frames = strtol(value, &end, 10);
++        benchmark_warmup = *value && !*end ? frames : -1;
++    }
 +}
 +void cyc_sdl_present_out(const char *path, long every) { (void)path; (void)every; }
 +void cyc_sdl_image_path(const char *path) { (void)path; }
@@ -1532,6 +2796,14 @@ index 0000000..6307008
 +    SDL_GameController *pad = NULL;
 +    const char *fatal = NULL;
 +    int result = 2;
++    uint8_t *suite_state = NULL;
++    size_t suite_state_len = 0;
++    /* Warm both policies, then measure ABBA in one launch. */
++    static const bool suite_policy[] = {false, true, false, true, true, false};
++    unsigned suite_leg = 0;
++    uint64_t suite_mem = 0, suite_hw = 0, suite_cycles = 0;
++    bool suite_complete = false;
++
 +    audio = 0; ready = storage_failed = suspended = false;
 +    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER)) {
 +        fatal = "Cannot initialize SDL video, audio and controllers."; goto cleanup;
@@ -1545,7 +2817,7 @@ index 0000000..6307008
 +    int vsync_result = SDL_RenderSetVSync(renderer, 0);
 +    SDL_RendererInfo renderer_info;
 +    if (!SDL_GetRendererInfo(renderer, &renderer_info))
-+        fprintf(stderr, "Renderer=%s flags=%u vsync_off_result=%d PPU=%s\n",
++        runner_log("Renderer=%s flags=%u vsync_off_result=%d PPU=%s\n",
 +            renderer_info.name, renderer_info.flags, vsync_result, cyc_ppu_implementation());
 +    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256, 240);
 +    if (!texture) { fatal = "Cannot create the NES frame texture."; goto cleanup; }
@@ -1558,7 +2830,9 @@ index 0000000..6307008
 +    }
 +    stream = SDL_NewAudioStream(AUDIO_S16SYS, 1, 48000, have.format, have.channels, have.freq);
 +    if (!stream || !cyc_audio_enable(48000)) { fatal = "Cannot configure NES audio conversion."; goto cleanup; }
-+    fprintf(stderr, "Audio %d Hz channels=%u format=%u\n", have.freq, have.channels, have.format);
++    runner_log("Audio %d Hz channels=%u format=%u buffer_frames=%u source_rate=48000\n",
++        have.freq, have.channels, have.format, have.samples);
++    const Uint64 bytes_per_second = (Uint64)have.freq * have.channels * (SDL_AUDIO_BITSIZE(have.format) / 8);
 +    SDL_PauseAudioDevice(audio, 0);
 +    pad = open_pad();
 +    SDL_GameControllerUpdate();
@@ -1577,9 +2851,14 @@ index 0000000..6307008
 +    bool running = true, old_save = false, old_load = false;
 +    const Uint64 frequency = SDL_GetPerformanceFrequency();
 +    const double period = cyc_host_frame_seconds() * (double)frequency;
-+    fprintf(stderr, "Region=%s target_fps=%.3f core_profiler=%s\n",
++    runner_log("Region=%s target_fps=%.3f core_profiler=%s\n",
 +        cyc_region() == CYC_REGION_PAL ? "PAL" : "NTSC", 1.0 / cyc_host_frame_seconds(),
 +        NESRECOMP_CORE_PROFILER ? "sampled" : "off");
++    runner_log("Sprite_kernel=%s benchmark=%u warmup_frames=%ld input=%s\n", sprite_kernel_name(),
++        benchmark, benchmark ? benchmark_warmup : 0, replay_path ? "scripted" : benchmark ? "neutral" : "controller");
++    if (benchmark && (CYC_SWITCH_SAVES || benchmark_warmup < 1 || exit_after <= benchmark_warmup)) {
++        fatal = "Benchmark requires saves OFF and --exit-after greater than its positive warm-up."; goto cleanup;
++    }
 +#if NESRECOMP_CORE_PROFILER
 +    cyc_profiler_set_clock(profile_clock);
 +#endif
@@ -1587,6 +2866,24 @@ index 0000000..6307008
 +    Uint64 started = SDL_GetPerformanceCounter(), checkpoint = started, frames = 0, dropped = 0;
 +    Uint64 report_at = started;
 +    FrameTimings timings = {0};
++    FrameTimings measured = {0};
++    Uint64 benchmark_started = 0, benchmark_ended = 0;
++    unsigned benchmark_interruptions = 0;
++    Uint64 replay_frames = 0;
++    if (benchmark_suite) {
++        char error[256];
++        if (NESRECOMP_CORE_PROFILER || cyc_is_fds() || !cyc_host_window_replay_restart()) {
++            fatal = "Comparison suite requires an unprofiled cartridge and a pad-only route."; goto cleanup;
++        }
++        if (!cyc_state_save(&suite_state, &suite_state_len, error, sizeof(error))) {
++            runner_log("Comparison snapshot: %s\n", error);
++            fatal = "Cannot capture comparison snapshot."; goto cleanup;
++        }
++        comparison_set_enabled(suite_policy[0]);
++        suite_cycles = hw_native_interval_cycles;
++        runner_log("comparison_leg index=0 phase=warmup policy=%s enabled=0\n", comparison_policy());
++        report_platform();
++    }
 +    while (running) {
 +#ifdef __SWITCH__
 +        if (!appletMainLoop()) break;
@@ -1597,6 +2894,7 @@ index 0000000..6307008
 +            if (event.type == SDL_APP_WILLENTERBACKGROUND ||
 +                (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)) {
 +                save_to(AUTO_PATH); suspended = true;
++                if (benchmark && frames >= (Uint64)benchmark_warmup) ++benchmark_interruptions;
 +                SDL_ClearQueuedAudio(audio); SDL_AudioStreamClear(stream);
 +                SDL_PauseAudioDevice(audio, 1);
 +            }
@@ -1623,9 +2921,10 @@ index 0000000..6307008
 +        if (pad && SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
 +            SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) &&
 +            SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) break;
-+        uint8_t input[2] = {buttons(pad), 0};
++        uint8_t input[2] = {benchmark ? 0 : buttons(pad), 0};
++        if (cyc_host_window_replay((long)frames, input, 2)) ++replay_frames;
 +        cyc_session_logical_input(input, 2); cyc_session_input(input);
-+        cyc_set_controller(0, input[0]); cyc_set_controller(1, 0);
++        cyc_set_controller(0, input[0]); cyc_set_controller(1, input[1]);
 +        Uint64 stage = SDL_GetPerformanceCounter();
 +        cyc_session_frame_begin(); cyc_run_frame(); cyc_session_frame_end();
 +        cyc_host_frame_done((long)cyc_ring_frame);
@@ -1634,17 +2933,25 @@ index 0000000..6307008
 +        ++timings.frames;
 +        ++frames;
 +        int16_t pcm[4096]; size_t count;
-+        while ((count = cyc_audio_read(pcm, 4096)))
++        while ((count = cyc_audio_read(pcm, 4096))) {
++            timings.source_samples += count;
 +            if (SDL_AudioStreamPut(stream, pcm, (int)(count * sizeof(*pcm)))) {
 +                fatal = "Audio conversion failed."; running = false; break;
 +            }
++        }
 +        Uint32 limit = (Uint32)(have.freq / 10) * have.channels * (SDL_AUDIO_BITSIZE(have.format) / 8);
 +        unsigned char converted[16384]; int bytes;
 +        while ((bytes = SDL_AudioStreamGet(stream, converted, sizeof(converted))) > 0) {
-+            if (SDL_GetQueuedAudioSize(audio) + (Uint32)bytes > limit) { ++dropped; continue; }
++            Uint32 queued = SDL_GetQueuedAudioSize(audio);
++            if (!timings.queue_polls || queued < timings.queue_min) timings.queue_min = queued;
++            if (queued > timings.queue_max) timings.queue_max = queued;
++            ++timings.queue_polls;
++            if (!queued) ++timings.queue_empty_polls;
++            if (queued + (Uint32)bytes > limit) { ++dropped; continue; }
 +            if (SDL_QueueAudio(audio, converted, (Uint32)bytes)) {
 +                fatal = "Audio queue failed."; running = false; break;
 +            }
++            timings.queued_bytes += (Uint32)bytes;
 +        }
 +        if (bytes < 0) { fatal = "Audio conversion failed."; break; }
 +        stage_end = SDL_GetPerformanceCounter();
@@ -1661,12 +2968,70 @@ index 0000000..6307008
 +        SDL_RenderPresent(renderer);
 +        Uint64 now = SDL_GetPerformanceCounter();
 +        timings.present += now - stage;
-+        if (now - report_at >= frequency * 5) {
-+            report_timings(&timings, now - report_at, frequency);
++        benchmark_ended = now;
++        if (benchmark && frames == (Uint64)benchmark_warmup) {
++            /* A fixed emulated warm-up length, independent of host speed. */
++            memset(&timings, 0, sizeof(timings));
++            report_at = benchmark_started = now;
++            runner_log("benchmark_warmup_complete frames=%ld input=%s\n", benchmark_warmup,
++                replay_path ? "scripted" : "neutral");
++#if NESRECOMP_CORE_PROFILER
++            cyc_profiler_reset();
++#endif
++        }
++        if (now - report_at >= frequency * 5 && (!benchmark || frames > (Uint64)benchmark_warmup)) {
++            if (benchmark) add_totals(&measured, &timings);
++            report_timings(&timings, now - report_at, frequency, bytes_per_second);
 +            memset(&timings, 0, sizeof(timings)); report_at = now;
 +        }
 +        if (now - checkpoint >= frequency * 30) { save_to(AUTO_PATH); checkpoint = now; }
-+        if (exit_after >= 0 && frames >= (Uint64)exit_after) break;
++        if (exit_after >= 0 && frames >= (Uint64)exit_after) {
++            if (!benchmark_suite) break;
++            add_totals(&measured, &timings);
++            double seconds = (double)(benchmark_ended - benchmark_started) / frequency;
++            double scale_ms = 1000.0 / (double)frequency / (double)measured.frames;
++            uint64_t mem = cyc_mem_state_hash(), hardware = cyc_hw_state_hash();
++            if (!suite_leg) { suite_mem = mem; suite_hw = hardware; }
++            bool match = mem == suite_mem && hardware == suite_hw;
++            bool complete = !benchmark_interruptions && (!replay_path || replay_frames == frames);
++            runner_log("comparison_result index=%u phase=%s policy=%s enabled=%u frames=%llu warmup=%ld "
++                       "total_frames=%llu fps=%.3f emulation_ms=%.6f audio_ms=%.6f present_ms=%.6f "
++                       "audio_supply=%.6f batched_cycles=%llu mem=%016llX hw=%016llX "
++                       "state_match=%u interruptions=%u complete=%u replay_frames=%llu\n",
++                suite_leg, suite_leg < 2 ? "warmup" : "measure", comparison_policy(), suite_policy[suite_leg],
++                (unsigned long long)measured.frames, benchmark_warmup, (unsigned long long)frames,
++                measured.frames / seconds, measured.emulation * scale_ms, measured.audio * scale_ms,
++                measured.present * scale_ms, (double)measured.source_samples / 48000.0 / seconds,
++                (unsigned long long)(hw_native_interval_cycles - suite_cycles),
++                (unsigned long long)mem, (unsigned long long)hardware, match,
++                benchmark_interruptions, complete, (unsigned long long)replay_frames);
++            report_platform();
++            if (!match || !complete) { fatal = "Comparison state mismatch or interrupted run."; break; }
++            if (++suite_leg == sizeof(suite_policy) / sizeof(suite_policy[0])) {
++                suite_complete = true; break;
++            }
++            char error[256];
++            SDL_PauseAudioDevice(audio, 1);
++            if (!cyc_state_load(suite_state, suite_state_len, error, sizeof(error))) {
++                runner_log("Comparison restore: %s\n", error);
++                fatal = "Cannot restore comparison snapshot."; break;
++            }
++            cyc_session_state_loaded();
++            if (!cyc_host_window_replay_restart()) { fatal = "Cannot restart comparison input."; break; }
++            SDL_ClearQueuedAudio(audio); SDL_AudioStreamClear(stream);
++            SDL_PauseAudioDevice(audio, 0);
++            comparison_set_enabled(suite_policy[suite_leg]);
++            suite_cycles = hw_native_interval_cycles;
++            frames = replay_frames = dropped = 0;
++            benchmark_started = benchmark_ended = 0;
++            benchmark_interruptions = 0;
++            memset(&timings, 0, sizeof(timings)); memset(&measured, 0, sizeof(measured));
++            report_at = checkpoint = SDL_GetPerformanceCounter(); next = (double)report_at;
++            runner_log("comparison_leg index=%u phase=%s policy=%s enabled=%u\n", suite_leg,
++                suite_leg < 2 ? "warmup" : "measure", comparison_policy(), suite_policy[suite_leg]);
++            report_platform();
++            continue;
++        }
 +        if (!uncapped) {
 +            now = SDL_GetPerformanceCounter();
 +            Uint64 wait_started = now;
@@ -1682,13 +3047,37 @@ index 0000000..6307008
 +    }
 +    if (!fatal && !storage_failed && !save_to(AUTO_PATH)) storage_failed = true;
 +    if (storage_failed) fatal = "Could not save progress to the SD card. See runtime.log.";
-+    report_timings(&timings, SDL_GetPerformanceCounter() - report_at, frequency);
-+    fprintf(stderr, "frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
++    if (benchmark && !benchmark_suite && benchmark_started && frames > (Uint64)benchmark_warmup) {
++        add_totals(&measured, &timings);
++        double seconds = (double)(benchmark_ended - benchmark_started) / frequency;
++        double per_frame = 1000.0 / (double)frequency / (double)measured.frames;
++        runner_log("benchmark kernel=%s frames=%llu warmup_frames=%ld total_frames=%llu "
++                   "seconds=%.6f fps=%.3f emulation_ms=%.6f audio_ms=%.6f present_ms=%.6f "
++                   "audio_supply=%.6f interruptions=%u complete=%u profiled=%u input=%s replay_frames=%llu\n",
++            sprite_kernel_name(), (unsigned long long)measured.frames, benchmark_warmup, (unsigned long long)frames,
++            seconds, measured.frames / seconds, measured.emulation * per_frame,
++            measured.audio * per_frame, measured.present * per_frame,
++            (double)measured.source_samples / 48000.0 / seconds, benchmark_interruptions,
++            !fatal && !benchmark_interruptions && frames == (Uint64)exit_after && (!replay_path || replay_frames == frames),
++            NESRECOMP_CORE_PROFILER ? 1u : 0u, replay_path ? "scripted" : "neutral", (unsigned long long)replay_frames);
++        /* Outside measured time; no per-frame hashing disturbs the benchmark. */
++        runner_log("benchmark_state mem=%016llX hw=%016llX\n",
++            (unsigned long long)cyc_mem_state_hash(), (unsigned long long)cyc_hw_state_hash());
++    }
++    report_timings(&timings, SDL_GetPerformanceCounter() - report_at, frequency, bytes_per_second);
++    runner_log("frames=%llu seconds=%.3f native_cycles=%llu interp_rom=%llu interp_ram=%llu dropped_audio_chunks=%llu saves=%u\n",
 +        (unsigned long long)frames, (double)(SDL_GetPerformanceCounter() - started) / frequency,
 +        (unsigned long long)cyc_run_native_cycles, (unsigned long long)cyc_run_interp_rom_cycles,
 +        (unsigned long long)cyc_run_interp_ram_cycles, (unsigned long long)dropped, saves);
++    if (benchmark_suite) runner_log("comparison_complete legs=%u complete=%u\n", suite_leg, suite_complete);
 +    result = fatal ? 2 : 0;
 +cleanup:
++    free(suite_state);
++    hw_native_set_masked_irq(true);
++    hw_native_set_pal_intervals(true);
++    hw_native_set_pal_raster(true);
++    hw_native_set_sprite_fetch(true);
++    hw_native_set_sprite_fetch_jobs(true);
 +    ready = false;
 +#if defined(__SWITCH__) && CYC_SWITCH_SAVES
 +    if (hooked) { appletUnhook(&hook); hooked = false; }
@@ -1704,10 +3093,10 @@ index 0000000..6307008
 +}
 diff --git a/runner/switch/switch.cmake b/runner/switch/switch.cmake
 new file mode 100644
-index 0000000..a4d342e
+index 0000000..3a3f9a7
 --- /dev/null
 +++ b/runner/switch/switch.cmake
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,62 @@
 +# Switch packaging and the small vanilla SDL host. Hardware sources remain in cyc.cmake.
 +include_guard(GLOBAL)
 +if(NOT DEFINED NESRECOMP_SWITCH_GAME_DIR)
@@ -1720,6 +3109,7 @@ index 0000000..a4d342e
 +set(NESRECOMP_SWITCH_VERSION "0.2.0" CACHE STRING "NACP version")
 +option(NESRECOMP_SWITCH_SAVES "Enable experimental SD save/load and automatic resume" OFF)
 +option(NESRECOMP_SWITCH_LTO "Optimize across the Switch runtime's translation units" ON)
++set(NESRECOMP_SWITCH_ROMFS_ROOT "" CACHE PATH "Optional caller-owned read-only assets")
 +
 +function(nesrecomp_cyc_enable_switch target)
 +    if(NOT NESRECOMP_SWITCH_GAME_DIR MATCHES "^sdmc:/[A-Za-z0-9_/-]+$" OR
@@ -1757,7 +3147,17 @@ index 0000000..a4d342e
 +    set(nacp "${CMAKE_CURRENT_BINARY_DIR}/${target}.nacp")
 +    nx_generate_nacp(OUTPUT "${nacp}" NAME "${NESRECOMP_SWITCH_TITLE}"
 +        AUTHOR "${NESRECOMP_SWITCH_AUTHOR}" VERSION "${NESRECOMP_SWITCH_VERSION}")
-+    nx_create_nro(${target} NACP "${nacp}")
++    if(NESRECOMP_SWITCH_ROMFS_ROOT)
++        if(NOT IS_DIRECTORY "${NESRECOMP_SWITCH_ROMFS_ROOT}")
++            message(FATAL_ERROR "Switch ROMFS root must be an existing directory")
++        endif()
++        file(GLOB_RECURSE romfs_inputs CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE "${NESRECOMP_SWITCH_ROMFS_ROOT}/*")
++        set(nro "${CMAKE_CURRENT_BINARY_DIR}/${target}.nro")
++        nx_create_nro(${target} OUTPUT "${nro}" NACP "${nacp}" ROMFS "${NESRECOMP_SWITCH_ROMFS_ROOT}")
++        add_custom_command(OUTPUT "${nro}" APPEND DEPENDS ${romfs_inputs})
++    else()
++        nx_create_nro(${target} NACP "${nacp}")
++    endif()
 +endfunction()
 diff --git a/tools/cyc/mesen_shot/README.md b/tools/cyc/mesen_shot/README.md
 new file mode 100644
@@ -1906,6 +3306,19 @@ index 9fea585..ef46811 100644
  	settings->GetNesConfig().EnableOamDecay = false;
  	ApplyHardwareOptions(settings->GetNesConfig(), hwOptions);
  	/* ControllerConfig::Type defaults to None, so a headless build has no
+diff --git a/tools/cyc/prepare_project.py b/tools/cyc/prepare_project.py
+index 0cf47c2..0a8b89b 100644
+--- a/tools/cyc/prepare_project.py
++++ b/tools/cyc/prepare_project.py
+@@ -77,7 +77,7 @@ def native_interval_board(path, fds):
+     mapper = (head[6] >> 4) | (head[7] & 0xf0)
+     if head[7] & 0x0c == 0x08:
+         mapper |= (head[8] & 0x0f) << 8
+-    return '1' if mapper in (0, 1, 4, 66) else '0'
++    return '1' if mapper in (0, 1, 3, 4, 66) else '0'
+ 
+ 
+ def cmake_quote(value):
 diff --git a/tools/cyc/test_cyc_profiles.py b/tools/cyc/test_cyc_profiles.py
 new file mode 100644
 index 0000000..04ee1df
@@ -2018,12 +3431,117 @@ index 0000000..04ee1df
 +
 +if __name__ == '__main__':
 +    main()
+diff --git a/tools/cyc/test_masked_irq.py b/tools/cyc/test_masked_irq.py
+new file mode 100644
+index 0000000..22b1977
+--- /dev/null
++++ b/tools/cyc/test_masked_irq.py
+@@ -0,0 +1,16 @@
++"""Compare held-IRQ batching against the existing coupled-clock path."""
++import argparse
++import subprocess
++p = argparse.ArgumentParser(description=__doc__)
++p.add_argument('--probe', required=True)
++a = p.parse_args()
++outputs = []
++for mode in ('reference', 'candidate'):
++    run = subprocess.run([a.probe, mode], capture_output=True, text=True, timeout=120)
++    if run.returncode:
++        raise AssertionError((mode, run.stderr, run.stdout))
++    outputs.append(run.stdout.splitlines())
++assert len(outputs[0]) == len(outputs[1])
++for n, (before, after) in enumerate(zip(*outputs)):
++    assert before == after, (n, before, after)
++print('PASS: all NTSC alignments, held IRQ, CLI/SEI/PLP/RTI polling, status clear, sequencer reset, DMA and machine/picture state')
+diff --git a/tools/cyc/test_pal_intervals.py b/tools/cyc/test_pal_intervals.py
+new file mode 100644
+index 0000000..4b860df
+--- /dev/null
++++ b/tools/cyc/test_pal_intervals.py
+@@ -0,0 +1,16 @@
++"""Compare PAL batching against the existing coupled-clock path."""
++import argparse
++import subprocess
++p = argparse.ArgumentParser(description=__doc__)
++p.add_argument('--probe', required=True)
++a = p.parse_args()
++outputs = []
++for mode in ('reference', 'raster-reference', 'candidate'):
++    run = subprocess.run([a.probe, mode], capture_output=True, text=True, timeout=120)
++    if run.returncode:
++        raise AssertionError((mode, run.stderr, run.stdout))
++    outputs.append(run.stdout.splitlines())
++assert len({len(out) for out in outputs}) == 1
++for n, values in enumerate(zip(*outputs)):
++    assert len(set(values)) == 1, (n, values)
++print('PASS: all PAL phases, NROM/CNROM, CHR writes, DMA, split PPU traffic, APU modes, Zapper, snapshots, machine/picture state and PCM')
+diff --git a/tools/cyc/test_raster_intervals.py b/tools/cyc/test_raster_intervals.py
+index 5dbcdfc..26979c3 100644
+--- a/tools/cyc/test_raster_intervals.py
++++ b/tools/cyc/test_raster_intervals.py
+@@ -9,6 +9,8 @@ import subprocess
+ 
+ def main():
+     ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument('--sprite-fetch', action='store_true', help='Sprite fetch windows, register invalidation and following-line output')
++    ap.add_argument('--pal', action='store_true', help='Qualify PAL NROM/CNROM over all five phases')
+     ap.add_argument('--probe', required=True, type=Path)
+     ap.add_argument('--out', required=True, type=Path)
+     args = ap.parse_args()
+@@ -21,6 +23,14 @@ def main():
+         if diagnostic is not None:
+             env['NESRECOMP_RASTER_DUMP_ROW'] = str(diagnostic)
+         command = [str(args.probe.resolve())]
++        if args.pal:
++            command.append('--pal')
++        if args.sprite_fetch:
++            command.append('--sprite-fetch')
++        if mode == 'fetch-reference':
++            command.append('--no-sprite-fetch-jobs')
++        if mode == 'raster-reference':
++            command.append('--no-pal-raster')
+         if mode == 'reference':
+             command.append('--reference')
+         p = subprocess.run(command, capture_output=True, timeout=180, env=env,
+@@ -41,19 +51,26 @@ def main():
+         old = before[i] if i < len(before) else b'<missing>'
+         new = after[i] if i < len(after) else b'<missing>'
+         raise AssertionError(f'row {i}: {old!r} != {new!r}; diagnostics in {out}')
+-    if len(before) != 32 * 129:
+-        raise AssertionError(f'Expected 32 configurations with 128 cases, got {len(before)} rows')
++    if args.pal and run('raster-reference') != before:
++        raise AssertionError('PAL interval-only reference differs from coupled clocks')
++    if args.sprite_fetch and run('fetch-reference') != before:
++        raise AssertionError('Sprite fetch interval-only reference differs from coupled clocks')
++    configurations = 20 if args.pal else 32
++    if len(before) != configurations * 129:
++        raise AssertionError(f'Expected {configurations} configurations with 128 cases, got {len(before)} rows')
+     result = dict(
+-        cases=4096, rows=len(before),
++        cases=configurations * 128, rows=len(before), region='PAL' if args.pal else 'NTSC', sprite_fetch=args.sprite_fetch,
+         output_sha256=hashlib.sha256(b'\n'.join(before)).hexdigest(),
+         probe_sha256=hashlib.sha256(args.probe.read_bytes()).hexdigest(),
+-        coverage=('NROM/MMC1/MMC3/GxROM, CHR ROM/RAM, four alignments, '
++        coverage=(('PAL NROM/CNROM, CHR ROM/RAM, five phases, ' if args.pal else
++                   'NROM/MMC1/MMC3/GxROM, CHR ROM/RAM, four alignments, ') +
+                   'mirroring/four-screen, scroll/fine X, palette/emphasis/greyscale, '
+                   'OAM/overflow/sprite-zero, Zapper, decay deadlines, background records, '
+-                  'current-build serialized-state replay and full PCM'))
++                  'current-build serialized-state replay and full PCM' +
++                  (', sprite fetch jobs/8x16/flips/OAM wrap-full/register-data-port invalidation' if args.sprite_fetch else '')))
+     (out / 'results.json').write_text(json.dumps(result, indent=2) + '\n',
+                                     encoding='utf-8', newline='\n')
+-    print('PASS: 4096 varied raster cases and current-build replay; hardware/raster/RAM/background/PCM identical')
++    print(f'PASS: {configurations * 128} varied raster cases and current-build replay; hardware/raster/RAM/background/PCM identical')
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/tools/cyc/test_switch_host.py b/tools/cyc/test_switch_host.py
 new file mode 100644
-index 0000000..26d2636
+index 0000000..92a9c5f
 --- /dev/null
 +++ b/tools/cyc/test_switch_host.py
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,207 @@
 +#!/usr/bin/env python3
 +"""ROM-free Switch host contracts, using SDL dummy drivers on the native host.
 +
@@ -2032,6 +3550,7 @@ index 0000000..26d2636
 +"""
 +import argparse
 +import os
++import re
 +from pathlib import Path
 +import subprocess
 +
@@ -2041,6 +3560,7 @@ index 0000000..26d2636
 +    ap.add_argument('--out', required=True, type=Path)
 +    ap.add_argument('--recompiler', required=True, type=Path)
 +    ap.add_argument('--profile-core', action='store_true')
++    ap.add_argument('--pal', action='store_true', help='Exercise the PAL comparison policy')
 +    ap.add_argument('--no-saves', action='store_true', help='Check that all save/load paths are disabled')
 +    args = ap.parse_args()
 +    root = Path(__file__).resolve().parents[2]
@@ -2052,12 +3572,20 @@ index 0000000..26d2636
 +    # and a fixed loop. No commercial ROM, code, graphics or audio assets.
 +    program = bytes.fromhex('78 d8 a2 ff 9a a9 00 8d 00 20 8d 01 20 '
 +                            'a9 3f 8d 06 20 a9 00 8d 06 20 a9 21 8d 07 20 '
-+                            'a9 08 8d 01 20 e6 00 4c 21 80')
++                            'a9 08 8d 01 20 '
++                            # Poll all eight NES controller bits into RAM $01.
++                            'a9 01 8d 16 40 a9 00 8d 16 40 a2 08 '
++                            'ad 16 40 4a 66 01 ca d0 f7 '
++                            'e6 00 4c 21 80')
 +    prg = bytearray([0xea]) * 32768
 +    prg[:len(program)] = program
 +    prg[-6:] = bytes.fromhex('00 80 00 80 00 80')
 +    rom = data / 'rom.nes'
-+    rom.write_bytes(b'NES\x1a' + bytes([2, 1]) + bytes(10) + prg + bytes(8192))
++    header = bytearray(b'NES\x1a' + bytes([2, 1]) + bytes(10))
++    if args.pal:
++        header[7] = 8  # NES 2.0 carries an authoritative regional timing mode.
++        header[12] = 1
++    rom.write_bytes(header + prg + bytes(8192))
 +    config = out / 'vanilla.toml'
 +    config.write_text('[game]\ncycle_accurate=true\n', encoding='utf-8')
 +
@@ -2116,7 +3644,9 @@ index 0000000..26d2636
 +        # ignored entirely by a no-save build. Also run beyond the old 30s
 +        # checkpoint to catch an accidentally retained periodic write.
 +        auto.write_bytes(b'preserved old state')
-+        run([exe, '--exit-after', '600', '--uncapped'], 'no-saves-existing', env=env)
++        run([exe, '--exit-after', '600', '--uncapped', '--nxlink-log'], 'no-saves-existing', env=env)
++        launch_log = (data / 'runtime.log').read_text()
++        assert 'network_log=off requested=1' in launch_log, launch_log
 +        assert auto.read_bytes() == b'preserved old state'
 +        save_dir = data / 'saves'; parked = data / 'parked-saves'
 +        save_dir.rename(parked); save_dir.write_text('not a directory')
@@ -2126,8 +3656,54 @@ index 0000000..26d2636
 +        if args.profile_core:
 +            assert 'core_profiler=sampled' in log and 'core_profile estimated_ppu_ms=' in log, log
 +        assert 'saves=disabled' in log and 'saves=0' in log and 'Saved frame' not in log, log
++        supply = re.findall(r'audio_supply produced_ms=([\d.]+) wall_ms=([\d.]+) ratio=([\d.]+)', log)
++        assert supply and all(float(p) > 0 and float(w) > 0 for p, w, _ in supply), log
++        assert all(0.9 < float(ratio) < 1.1 for _, _, ratio in supply), supply
++        assert 'queue_empty_polls=' in log and 'source_rate=48000' in log, log
 +        assert save_dir.read_text() == 'not a directory'
 +        save_dir.unlink(); parked.rename(save_dir)
++        # Repeated neutral-input benchmark runs must cover exactly 600 frames
++        # after the same 300-frame warm-up and reach identical machine state.
++        states = []
++        for attempt in range(2):
++            run([exe, '--benchmark', '--exit-after', '900', '--uncapped'],
++                f'benchmark-{attempt}', env=env)
++            benchmark_log = (data / 'runtime.log').read_text()
++            assert 'warmup_frames=300 total_frames=900' in benchmark_log, benchmark_log
++            assert 'frames=600 warmup_frames=300' in benchmark_log, benchmark_log
++            assert 'interruptions=0 complete=1' in benchmark_log, benchmark_log
++            states.append(re.search(r'benchmark_state mem=([0-9A-F]+) hw=([0-9A-F]+)', benchmark_log).groups())
++        assert states[0] == states[1], states
++        route = out / 'input.txt'
++        route.write_text('0 START\n120 -\n400 RIGHT+B\n700 RIGHT+A\n')
++        run([exe, rom, '--input', route, '--frames', '900', '--hash-out', out / 'route-hashes.txt',
++             '--no-save'], 'route-headless', env=env)
++        expected = dict(re.findall(r'(mem|hw)=([0-9A-F]+)', (out / 'route-hashes.txt').read_text().splitlines()[-1]))
++        run([exe, '--window-input', route, '--benchmark', '--benchmark-warmup', '600',
++             '--exit-after', '900', '--uncapped'], 'route-window', env=env)
++        replay_log = (data / 'runtime.log').read_text()
++        actual = re.search(r'benchmark_state mem=([0-9A-F]+) hw=([0-9A-F]+)', replay_log).groups()
++        assert actual == (expected['mem'], expected['hw']), (actual, expected)
++        assert actual != states[0], 'Fixture route must affect observable machine state'
++        assert 'frames=300 warmup_frames=600 total_frames=900' in replay_log, replay_log
++        assert 'input=scripted replay_frames=900' in replay_log and 'complete=1' in replay_log, replay_log
++        if not args.profile_core:
++            run([exe, '--window-input', route, '--benchmark-suite', '--benchmark-warmup', '600',
++                 '--exit-after', '900'], 'comparison-suite', env=env)
++            suite_log = (data / 'runtime.log').read_text()
++            legs = [dict(re.findall(r'(\w+)=([^\s]+)', line)) for line in suite_log.splitlines()
++                    if line.startswith('comparison_result ')]
++            assert len(legs) == 6, suite_log
++            assert [int(leg['enabled']) for leg in legs] == [0, 1, 0, 1, 1, 0]
++            assert all(leg['policy'] == ('pal_raster' if args.pal else 'sprite_fetch_jobs') for leg in legs)
++            assert ('Region=PAL ' if args.pal else 'Region=NTSC ') in suite_log
++            for i, leg in enumerate(legs):
++                assert leg['index'] == str(i) and leg['phase'] == ('warmup' if i < 2 else 'measure')
++                assert leg['frames'] == '300' and leg['warmup'] == '600' and leg['total_frames'] == '900'
++                assert leg['replay_frames'] == '900' and leg['state_match'] == leg['complete'] == '1'
++                assert (leg['mem'], leg['hw']) == (expected['mem'], expected['hw']), (leg, expected)
++            assert 'comparison_complete legs=6 complete=1' in suite_log
++            assert 'saves=0' in suite_log and auto.read_bytes() == b'preserved old state'
 +        print('Switch no-save host: ignored old state and invalid save directory; 1900 paced frames passed without checkpoint or exit saves')
 +        print(f'Prepared cross-build source: {source}')
 +        return
