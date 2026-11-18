@@ -16,9 +16,9 @@ def main():
     args = ap.parse_args()
     root = Path(__file__).resolve().parents[3]
     rom = args.rom.resolve()
-    out = root / 'build/games/smb1' / ('tests' if args.variant == 'baseline' else 'tests-optimized')
+    out = root / 'build/recipes/smb1' / ('tests' if args.variant == 'baseline' else 'tests-optimized')
     out.mkdir(parents=True, exist_ok=True)
-    exe = root / 'build/games/smb1' / ('host' if args.variant == 'baseline' else 'host-optimized') / 'nes_game'
+    exe = root / 'build/recipes/smb1' / ('host' if args.variant == 'baseline' else 'host-optimized') / 'nes_game'
     if not exe.is_file():
         ap.error('Build this variant with scripts/build-game.py first')
     route = out / 'gameplay.txt'
@@ -51,7 +51,7 @@ def main():
         assert audio['rate'] == 48000 and audio['channels'] == 1 and peak > 0
     summary = dict(frames=1800, native_interpreter_match=True, resumed_frames=1199,
                    state_continuation_match=True, interpreted_rom_cycles=0, audio=audio)
-    oracle = root / '.local/src/nesrecomp/build/smb-oracle/cyc_oracle'
+    oracle = root / 'external/nesrecomp/build/smb-oracle/cyc_oracle'
     if oracle.is_file():
         reference = run(oracle, 'oracle', '--screenshot', out / 'oracle.png')
         def without_internal_hash(line):

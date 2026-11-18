@@ -1,74 +1,30 @@
 # Adventure Island Classic (Europe)
 
-The supplied cartridge is the European PAL CNROM release: payload CRC32
-`86867830`, mapper 3, 32 KiB PRG and 32 KiB CHR. Its dump has legacy header
-timing left unspecified. `game.cmake` explicitly selects `REGION PAL` using
-the matching [NesCartDB cartridge record](https://nescartdb.com/profile/view/1428/adventure-island-classic).
-This preserves its original approximately 50.01 FPS target. The ROM is not
-rewritten or included in Git; a private copy is under `.local/roms/`.
+| | |
+| --- | --- |
+| ROM | payload CRC32 `86867830`, mapper 3 (CNROM), 32 KiB PRG + 32 KiB CHR |
+| Region | PAL (50.0 FPS), set explicitly: the legacy iNES header leaves timing unspecified ([NesCartDB](https://nescartdb.com/profile/view/1428/adventure-island-classic)) |
+| PPU | FRAME on Switch; LLE for the desktop reference |
+| Seeds | `cyc_seeds.txt`: 892 addresses recorded with `--miss-log` (addresses only) |
+| SD folder | `sdmc:/switch/nesrecomp/adventure-island/` |
+| Launcher entry | **Adventure Island Classic Recomp** (`AdventureIslandRecomp.nro`) |
 
-This module uses the generic hardware profile and shared CNROM implementation.
-It does not use Mario's NROM/NTSC contract, and adds no title routine replacements.
-The current core deliberately disables native interval batching for PAL and
-mapper 3; don't enable NTSC shortcuts to obtain a misleading speed gain.
-
-```sh
-mise run build-adventure
-mise run copy-adventure
-```
-
-The tasks default to `Adventure Island Classic (Europe).nes` in the workspace.
-Override `NESRECOMP_ADVENTURE_ISLAND_ROM` or `NESRECOMP_SD_ROOT` as needed.
-The copy task follows the same increment/build/verify/deploy policy as Mario.
-The first deployed trial is **0.1.1**. The launcher entry is
-**Adventure Island Classic Recomp**, with its own data directory:
-
-```text
-sdmc:/switch/nesrecomp/adventure-island/
-  AdventureIslandRecomp.nro
-  rom.nes
-  build.json
-  runtime.log               (created on launch)
-```
-
-Plus starts, A jumps, B uses the game's B action, and D-pad/left stick moves.
-L + R + Plus exits. Saving is disabled, including automatic resume.
-
-## Desktop validation
-
-Build the baseline and optimized host variants, then run the title tests:
+Full speed needs FRAME on PAL CNROM and masked-IRQ intervals, which are open
+upstream PRs (#112, #113) carried by the engine pin. See
+[docs/ENGINE.md](../../docs/ENGINE.md).
 
 ```sh
-python3 scripts/build-game.py adventure-island --rom .local/roms/adventure-island-europe.nes --host-only
-python3 scripts/build-game.py adventure-island --rom .local/roms/adventure-island-europe.nes --host-only --variant optimized
-python3 games/adventure-island/tests/verify.py --rom .local/roms/adventure-island-europe.nes
+python3 scripts/build-game.py adventure-island --rom "Adventure Island Classic (Europe).nes" --host-only
+python3 scripts/build-game.py adventure-island --rom "Adventure Island Classic (Europe).nes" --host-only --variant optimized
+python3 games/adventure-island/tests/verify.py --rom "Adventure Island Classic (Europe).nes"
 ```
 
-The 1,800-frame PAL route waits for title initialization, presses Start, enters
-the first forest level and exercises movement/jumps. Both LLE and HLE passed:
+`tests/gameplay.txt` is an 1,800-frame route: title, Start, then movement and
+jumps through the first forest level. For each build (LLE and FRAME) the
+verifier checks native vs interpreter execution, no interpreted ROM cycles,
+save-state continuation from frame 1200, and 48 kHz audio of the expected PAL
+length. It then requires both builds to produce identical frame traces,
+frame logs (RAM, CIRAM, palette, OAM, picture), PCM and screenshots.
 
-- All native/interpreter frame hashes match; no interpreted ROM cycles on this route.
-- Saving after frame 1200 resumes at 1201; all remaining 599 hashes and final pixels match.
-- LLE/HLE hashes, untraced frame records, PCM and PNG match byte for byte.
-- Audio is 48 kHz mono, about 35.990 seconds, peak amplitude 10191.
-- Title and first-level screenshots were inspected.
-
-The 892 seed addresses were recorded from the title and gameplay routes with
-`--miss-log`; they contain addresses only, not extracted game code. Unvisited
-code retains interpreter fallback. Coverage is not a full-game or speed guarantee.
-The local TriCNES adapter is NTSC-only. A separate MesenCE PAL test now matches
-903 consecutive first-level frames, with boot alignment independently checked
-against zero-page RAM before input. Run `tests/reference.py` with the setup in
-[REFERENCE_TOOLS.md](../../docs/REFERENCE_TOOLS.md). This is finite route coverage;
-it has not reproduced the user's reported console visual glitches.
-The native/interpreter results remain under `build/games/adventure-island/test-summary.json`.
-The first physical log records 2,006 frames over 106.924 seconds: **18.76 FPS**,
-normal exit and zero saves/dropped audio chunks. It is well below the PAL
-target; picture, sound and controls require the user's qualitative feedback.
-The [hardware findings and shared PAL scheduler work](../../docs/HARDWARE_0.2.3.md)
-record the next optimization and its correctness/desktop measurement evidence.
-
-The 0.1.2 console follow-up improved throughput to **22.98 FPS**; sound and
-controls were confirmed, with visual glitches still reported. The next **0.1.3**
-build uses shared ARM NEON sprite kernels, preserving the validated pixels.
-Its Cortex-A57 speed and the reported glitches still require hardware follow-up.
+On a Switch in handheld mode at the stock clock: 53.4 FPS uncapped (17.25 ms
+emulation per frame; target 20.0 ms). Upstream `master` alone: 18.7 FPS.

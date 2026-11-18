@@ -41,17 +41,15 @@ def stage(source, destination, expected):
         raise
 
 
-def deploy(game, rom, sd, backend, profile_core=False):
+def deploy(game, rom, sd, backend):
     require_mount(sd)
     version_file = ROOT / 'games' / game / 'VERSION'
     version = next_patch(version_file.read_text())
     print(f'Building and copying {game} {version}', flush=True)
     command = [sys.executable, str(ROOT / 'scripts/build-game.py'), game,
                '--rom', str(rom), '--version', version, '--backend', backend]
-    if profile_core:
-        command.append('--profile-core')
     subprocess.run(command, cwd=ROOT, check=True)
-    output = ROOT / 'build/games' / game
+    output = ROOT / 'build/recipes' / game
     manifest_path = output / 'build.json'
     manifest = json.loads(manifest_path.read_text())
     if manifest['game'] != game or manifest['version'] != version:
@@ -96,10 +94,9 @@ def main():
     ap.add_argument('--rom', required=True, type=Path)
     ap.add_argument('--sd-root', type=Path, default=Path('/Volumes/Untitled'))
     ap.add_argument('--backend', choices=['auto', 'native', 'docker'], default='auto')
-    ap.add_argument('--profile-core', action='store_true', help='Deploy with sampled core timing diagnostics')
     args = ap.parse_args()
     if not re.fullmatch(r'[a-z0-9_-]+', args.game) or not (ROOT / 'games' / args.game / 'game.cmake').is_file():
-        ap.error(f'Unknown game module: {args.game}')
+        ap.error(f'Unknown game recipe: {args.game}')
     rom = args.rom.expanduser().resolve()
     if not rom.is_file():
         ap.error('ROM must be an existing file')
@@ -110,7 +107,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             ap.error(f'A deployment of {args.game} is already running')
-        deploy(args.game, rom, args.sd_root.expanduser().resolve(), args.backend, args.profile_core)
+        deploy(args.game, rom, args.sd_root.expanduser().resolve(), args.backend)
 
 
 if __name__ == '__main__':

@@ -12,3 +12,4 @@ roms/
 *.nacp
 *.elf
 *.keys
+config.ini

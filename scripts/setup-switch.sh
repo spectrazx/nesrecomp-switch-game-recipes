@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .local/setup
 if [[ ! -x /usr/local/bin/dkp-pacman ]]; then
-  printf '%s\n' 'Install the official devkitPro pacman package first; see docs/TOOLCHAIN.md.' >&2
+  printf '%s\n' 'Install the official devkitPro pacman package first; see https://devkitpro.org/wiki/Getting_Started.' >&2
   exit 1
 fi
 if [[ ! -f .local/setup/devkitpro-before.txt ]]; then

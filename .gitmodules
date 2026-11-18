@@ -1,0 +1,7 @@
+[submodule "external/nesrecomp"]
+	path = external/nesrecomp
+	url = https://github.com/spectrazx/nesrecomp.git
+	branch = switch-integration
+[submodule "external/SuperMarioBrosNESRecomp"]
+	path = external/SuperMarioBrosNESRecomp
+	url = https://github.com/mstan/SuperMarioBrosNESRecomp.git

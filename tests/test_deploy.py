@@ -46,7 +46,7 @@ class DeploymentTests(unittest.TestCase):
         if Path(command[1]).name != 'build-game.py':
             return self.real_run(command, **kwargs, stdout=subprocess.DEVNULL)
         version = command[command.index('--version') + 1]
-        output = self.root / 'build/games/fixture'
+        output = self.root / 'build/recipes/fixture'
         output.mkdir(parents=True, exist_ok=True)
         # An original synthetic NRO container: no executable/game content.
         data = bytearray(0x80 + 0x38 + 0x4000)

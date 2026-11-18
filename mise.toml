@@ -1,29 +1,35 @@
-[tasks.copy]
-description = "Build the next Mario patch version and copy the verified package to the SD"
-run = '''
-python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"
-'''
+[tools]
+cmake = "3.31"
+ninja = "1.13"
 
 [tasks.build]
-description = "Build Mario at the current version without incrementing or copying"
+description = "Build Super Mario Bros. at its current version (desktop check + NRO)"
 run = 'python3 scripts/build-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}"'
 
-[tasks.copy-profile]
-description = "Build the next Mario patch with sampled core timings and copy it to SD"
-run = 'python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}" --profile-core'
+[tasks.copy]
+description = "Build the next Super Mario Bros. patch version and copy it to the mounted SD"
+run = 'python3 scripts/deploy-game.py smb1 --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"'
+
+[tasks.netload]
+description = "Send the existing Super Mario Bros. build to hbmenu over Wi-Fi (set NESRECOMP_SWITCH_IP)"
+run = 'python3 scripts/netload-game.py smb1'
 
 [tasks.build-adventure]
 description = "Build Adventure Island Classic (Europe) at its current version"
 run = 'python3 scripts/build-game.py adventure-island --rom "${NESRECOMP_ADVENTURE_ISLAND_ROM:-Adventure Island Classic (Europe).nes}"'
 
 [tasks.copy-adventure]
-description = "Build the next Adventure Island patch and copy the verified PAL game to SD"
+description = "Build the next Adventure Island patch version and copy it to the mounted SD"
 run = 'python3 scripts/deploy-game.py adventure-island --rom "${NESRECOMP_ADVENTURE_ISLAND_ROM:-Adventure Island Classic (Europe).nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"'
-
-[tasks.netload]
-description = "Send the existing Mario build to hbmenu over Wi-Fi (set NESRECOMP_SWITCH_IP)"
-run = 'python3 scripts/netload-game.py smb1'
 
 [tasks.netload-adventure]
 description = "Send the existing Adventure Island build to hbmenu over Wi-Fi"
 run = 'python3 scripts/netload-game.py adventure-island'
+
+[tasks.test]
+description = "Run the repository's own script tests"
+run = 'python3 -m unittest discover -s tests'
+
+[tasks.engine-status]
+description = "Show the pinned engine commit and which open upstream PRs it carries"
+run = 'git -C external/nesrecomp fetch -q https://github.com/mstan/nesrecomp.git master && git -C external/nesrecomp log --oneline --first-parent FETCH_HEAD..HEAD'
