@@ -16,6 +16,40 @@ your own ROM.
 | [Adventure Island Classic (Europe)](games/adventure-island/README.md) | CNROM, CRC32 `86867830` | PAL | FRAME | 53 FPS uncapped (target 50.0) |
 | [Super Mario Bros. widescreen](games/smb1-widescreen/README.md) (experimental) | NROM, CRC32 `D445F698` | NTSC | FRAME | 60.9 FPS uncapped (target 60.1), small margin |
 
+## Quick start: Super Mario Bros.
+
+You need your own `Super Mario Bros. (World)` ROM (CRC32 `D445F698`), Docker
+or devkitPro, and mise (see [Requirements](#requirements)).
+
+```sh
+git clone --recursive https://github.com/spectrazx/nesrecomp-switch-game-recipes.git
+cd nesrecomp-switch-game-recipes
+export NESRECOMP_SMB_ROM=/path/to/SMB.nes
+```
+
+**Original game (4:3):**
+
+```sh
+mise run build     # -> build/recipes/smb1/SuperMarioBrosRecomp.nro
+mise run copy      # SD card mounted: copies the NRO + rom.nes to sdmc:/switch/nesrecomp/smb1/
+```
+
+**Widescreen (16:9, experimental)**, using the widescreen renderer from
+[SuperMarioBrosNESRecomp](https://github.com/mstan/SuperMarioBrosNESRecomp)
+(PolyForm Noncommercial):
+
+```sh
+mise run build-widescreen   # -> build/recipes/smb1-widescreen/SuperMarioBrosWidescreenRecomp.nro
+mise run copy-widescreen    # same SD folder, shares rom.nes with the 4:3 build
+```
+
+Both show up as separate entries in the homebrew menu. If you don't want to
+move the SD card, open the homebrew menu, press **Y**, and run
+`NESRECOMP_SWITCH_IP=<switch ip> mise run netload` (or `netload-widescreen`).
+`rom.nes` must already be on the SD from one `copy`. Widescreen runtime options
+go after `--game-args`, e.g.
+`python3 scripts/netload-game.py smb1-widescreen --game-args "--widescreen 21:9"`.
+
 ## Engine
 
 `external/nesrecomp` tracks `switch-integration` on
