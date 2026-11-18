@@ -12,7 +12,8 @@ It has no commits of its own.
 | [#112](https://github.com/mstan/nesrecomp/pull/112) | `perf/masked-irq-intervals` | Native intervals while a masked APU frame IRQ is pending | Adventure Island speed |
 | [#113](https://github.com/mstan/nesrecomp/pull/113) | `perf/frame-ppu-pal` (on #112) | FRAME PPU and native intervals on PAL NROM/CNROM | Adventure Island speed |
 | [#114](https://github.com/mstan/nesrecomp/pull/114) | `perf/pal-clock` | Specialized PAL clock tail | Adventure Island (+4%) |
-| not opened yet | `feat/switch-host-extras` (on #111) | Switch runner accepts MODS/HOST_EXTRAS and presents a wider picture | smb1-widescreen |
+| not opened yet | `feat/switch-host-extras` (on #111) | Switch runner accepts MODS/HOST_EXTRAS and presents a wider picture; benchmark reports `compose_ms` | smb1-widescreen |
+| not opened yet | `perf/frame-background-capture` | Background capture once per 8-pixel tile instead of per pixel | smb1-widescreen speed |
 
 Pinned engine commit: see `git submodule status` or `mise run engine-status`
 (lists the merges on top of upstream `master`).
@@ -24,7 +25,8 @@ In a clone of the fork with `upstream` = mstan/nesrecomp:
 ```sh
 git fetch upstream
 git checkout -B switch-integration upstream/master
-for b in feat/switch-runner perf/arm-neon-sprite-kernels perf/frame-ppu-pal perf/pal-clock feat/switch-host-extras; do
+for b in feat/switch-runner perf/arm-neon-sprite-kernels perf/frame-ppu-pal perf/pal-clock feat/switch-host-extras \
+         perf/frame-background-capture; do
   git merge --no-ff --no-edit "$b"
 done
 git push --force-with-lease origin switch-integration
@@ -46,10 +48,17 @@ When every PR is merged, point the submodule at upstream instead:
 `git submodule set-url external/nesrecomp https://github.com/mstan/nesrecomp.git`
 and `git submodule set-branch --branch master external/nesrecomp`.
 
-## Other submodule
+`perf/frame-background-capture` conflicts with #113 on one line in
+`hw_ppu_frame.inc`: keep the batched call and pass `emphasis >> 6` (the
+PAL-swapped value), as #113 does.
 
-`external/SuperMarioBrosNESRecomp` (upstream Mario project, pinned at
-`de443b0`) provides only `cyc_seeds.txt` for the Mario recipe.
+## Mario project
+
+`external/SuperMarioBrosNESRecomp` tracks `perf/widescreen-compositor` on
+[spectrazx/SuperMarioBrosNESRecomp](https://github.com/spectrazx/SuperMarioBrosNESRecomp):
+upstream `de443b0` plus a faster, output-identical widescreen compositor (not
+offered upstream yet). It provides `cyc_seeds.txt` for smb1 and the widescreen
+sources for smb1-widescreen.
 
 ## Measurements
 

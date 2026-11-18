@@ -4,4 +4,5 @@
 	branch = switch-integration
 [submodule "external/SuperMarioBrosNESRecomp"]
 	path = external/SuperMarioBrosNESRecomp
-	url = https://github.com/mstan/SuperMarioBrosNESRecomp.git
+	url = https://github.com/spectrazx/SuperMarioBrosNESRecomp.git
+	branch = perf/widescreen-compositor

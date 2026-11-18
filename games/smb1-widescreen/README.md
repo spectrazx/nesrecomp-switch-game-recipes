@@ -52,10 +52,18 @@ personal, noncommercial use only. Keep its license notice with any copy.
 ## Status and limits
 
 Switch, handheld, stock clock, uncapped scripted route (`--widescreen-enemies
-classic` so the stock route stays in gameplay): **57.5 FPS**, 14.09 ms
-emulation + 3.15 ms presentation per frame against a 16.64 ms budget
-(stock smb1: 12.80 + 1.37 ms). Audio supply 0.96, so it runs slightly slow;
-reducing the compositor/presentation cost is the next step.
+classic` so the stock route stays in gameplay), ms per frame:
+
+| Build | FPS | Emulation | Present (compose) | Audio supply |
+| --- | --- | --- | --- | --- |
+| stock smb1 | 70.2 | 12.80 | 1.37 | 1.17 |
+| first widescreen build | 57.5 | 14.09 | 3.15 | 0.96 |
+| + glue: CHR copied once, no picture copy | 59.0 | 13.95 | 2.89 (1.42) | 0.98 |
+| + compositor draws only the margins | 59.9 | 14.05 | 2.57 (1.10) | 1.00 |
+| + background capture per tile | **60.9** | 13.85 | 2.50 (1.01) | 1.01 |
+
+Full speed (16.64 ms budget) with about 0.3 ms to spare. Every step is
+pixel-identical on the desktop (93 presented frames at 16:9, 21:9, 32:9).
 
 
 Upstream calls it experimental: bosses, linked balance platforms, frenzy

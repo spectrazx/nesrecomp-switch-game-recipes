@@ -14,6 +14,9 @@
 #include "cyc_host_extras.h"
 #include "cyc_ring.h"
 #include "cyc_presentation.h"
+#include "cyc_core.h"
+#include "cyc_render.h"
+#include "cyc_video.h"
 #include "hw_internal.h"
 #include "cpu6502.h"
 #include "game_widescreen.h"
@@ -50,7 +53,27 @@ static CycModRegs regs(void) {
         (uint8_t)(g_cpu.C | (g_cpu.Z << 1) | (g_cpu.I << 2) | (g_cpu.D << 3) | 0x20 | (g_cpu.V << 6) | (g_cpu.N << 7)), cpu.pc};
 }
 static void write_regs(void) { CycModRegs r = regs(); cyc_mod_set_regs(&r); }
-void smb1_cycle_sync(void) { cyc_presentation_sync(); read_regs(); }
+/* cyc_presentation_sync() also copies all 8 KiB of CHR through one call per
+ * byte, several times a frame. SMB's CHR is ROM, so copy it once per power on
+ * or state load and refresh only the small per-frame mirrors here. */
+static bool chr_synced;
+static void sync_chr(void) {
+    for (unsigned i = 0; i < sizeof g_chr_ram; i++) g_chr_ram[i] = cyc_render_chr((uint16_t)i);
+    chr_synced = !hw_cart.chr_ram;
+}
+static void presentation_sync(void) {
+    if (!chr_synced) sync_chr();
+    cyc_presentation_ram = hw.ram;
+    memcpy(g_ppu_oam, cyc_render_oam(), sizeof g_ppu_oam);
+    memcpy(g_ppu_nt, ppu.ciram, sizeof g_ppu_nt);
+    memcpy(g_ppu_pal, cyc_ppu_palette(), sizeof g_ppu_pal);
+    g_ppuctrl = cyc_frame_lines()[239].ctrl; g_ppumask = cyc_render_line_mask(239);
+    unsigned emphasis = (g_ppumask >> 5) * 64;
+    for (unsigned i = 0; i < 64; i++) g_nes_palette[i] = hw_palette_argb[emphasis + ((g_ppumask & 1) ? (i & 0x30) : i)];
+    g_render_width = cyc_video_width(); g_widescreen_left = cyc_video_native_x0();
+    g_widescreen_right = g_render_width - 256 - g_widescreen_left;
+}
+void smb1_cycle_sync(void) { presentation_sync(); read_regs(); }
 static void native_opaque(void) { opaque = NULL; opaque_width = 256; opaque_height = 240; }
 uint8_t nes_read(uint16_t address) { return cyc_mod_peek(address); }
 uint8_t mapper_peek_prg(uint16_t address) { return cyc_mod_peek(address); }
@@ -82,6 +105,10 @@ int smb1_cycle_register_hook(const char *id, uint16_t address, NESModFunctionEnt
 int ppu_renderer_background_opaque(int x, int y) {
     if (x < 0 || y < 0 || x >= opaque_width || y >= opaque_height) return 0;
     return opaque ? opaque[y * opaque_width + x] : cyc_frame_bg_opaque()[y * 256 + x];
+}
+const uint8_t *ppu_renderer_background_opaque_row(int y) {
+    if (opaque || y < 0 || y >= 240) return NULL;
+    return cyc_frame_bg_opaque() + y * 256;
 }
 void ppu_renderer_set_background_opaque_frame(const uint8_t *pixels, int width, int height) {
     opaque = pixels; opaque_width = width; opaque_height = height;
@@ -123,11 +150,10 @@ void smb1_cycle_init(void) {
 NES_MOD_CONSTRUCTOR(register_cycle_latch) { smb1_cycle_register_hook("smb.cycle.nmi", 0x8082, nmi); }
 
 /* ---- host extras (cycle_extras.c) ---- */
-static uint32_t picture[NES_MAX_RENDER_WIDTH * 240];
 static bool default_applied;
 static int suppress(int slot, int x, int y, void *user) { (void)x; (void)y; (void)user; return smb_ws_actors_suppress_sprite(slot); }
 static void power_on(void *ctx) {
-    (void)ctx; smb1_cycle_init(); cyc_render_capture_background(true); g_frame_count = 0;
+    (void)ctx; chr_synced = false; smb1_cycle_init(); cyc_render_capture_background(true); g_frame_count = 0;
     game_widescreen_init(); ppu_renderer_set_sprite_suppress(suppress, NULL);
     if (!default_applied) { default_applied = true; game_widescreen_arg("--widescreen", GAME_WIDESCREEN_DEFAULT); }
 }
@@ -139,8 +165,7 @@ static void frame_end(void *ctx) { (void)ctx; smb1_cycle_sync(); g_frame_count =
 static const uint32_t *present(void *ctx, int *width, int *height) {
     (void)ctx; smb1_cycle_sync(); const uint32_t *source = cyc_render_present(width, height);
     if (*width == 256) source = smb1_cycle_native_picture();
-    memcpy(picture, source, (size_t)*width * *height * sizeof(*picture));
-    return picture;
+    return source;
 }
 static bool option(void *ctx, const char *key, const char *value) {
     (void)ctx;
@@ -155,7 +180,7 @@ static bool option(void *ctx, const char *key, const char *value) {
     return game_widescreen_arg(key, value) != 0;
 }
 void debug_server_send_fmt(const char *format, ...) { (void)format; }
-static void state_loaded(void *ctx) { (void)ctx; smb1_cycle_sync(); }
+static void state_loaded(void *ctx) { (void)ctx; chr_synced = false; smb1_cycle_sync(); }
 const CycHostExtras *cyc_host_extras(void) {
     static const CycHostOption options[] = {
         {"--widescreen", true, "fit|16:9|21:9|32:9|off"}, {"--widescreen-hud", true, "edges|center"},
