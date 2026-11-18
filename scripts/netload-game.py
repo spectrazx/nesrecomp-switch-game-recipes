@@ -58,6 +58,7 @@ def main():
     ap.add_argument('--benchmark', action='store_true', help='Ignore gameplay buttons and measure after 300 warm-up frames')
     ap.add_argument('--warmup', type=int, default=300, help='Number of emulated benchmark warm-up frames')
     ap.add_argument('--gameplay', action='store_true', help='Replay the benchmark input bundled in this NRO')
+    ap.add_argument('--game-args', default='', help='Extra NRO arguments, e.g. "--widescreen 21:9"')
     ap.add_argument('--wait-netloader', type=float, default=0,
                     help='Wait this many seconds for a safe UDP discovery reply before uploading')
     args = ap.parse_args()
@@ -96,7 +97,7 @@ def main():
         nxlink = str(sdk_tool)
     backend = ('native' if nxlink else 'docker') if args.backend == 'auto' else args.backend
     # hbmenu prepends sdmc:/switch/ to the sanitized upload path.
-    remote = f'nesrecomp/{args.game}/{artifact.stem}-dev.nro'
+    remote = f'nesrecomp/{manifest.get("sd_dir", args.game)}/{artifact.stem}-dev.nro'
     if backend == 'native':
         if not nxlink:
             ap.error('Native nxlink is unavailable; use --backend docker')
@@ -111,6 +112,8 @@ def main():
                    *(['stdbuf', '-oL', '-eL'] if args.console else []),
                    '/opt/devkitpro/tools/bin/nxlink', '-a', address, '-p', remote,
                    f'/package/{name}']
+    if args.game_args and not args.console:
+        command[-1:-1] = ['--args', args.game_args]
     if args.console:
         runtime_args = '--nxlink-log'
         if args.frames:
@@ -120,6 +123,8 @@ def main():
             runtime_args += f' --benchmark-warmup {args.warmup}'
             if args.gameplay:
                 runtime_args += ' --window-input romfs:/benchmark-input.txt'
+        if args.game_args:
+            runtime_args += ' ' + args.game_args
         # Insert options before the NRO so GNU getopt also handles them on macOS.
         command[-1:-1] = ['-s', '--args', runtime_args]
     print(f'{"Would send" if args.dry_run else "Sending"} {args.game} {manifest["version"]}, SHA-256 {actual}', flush=True)

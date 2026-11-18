@@ -33,3 +33,15 @@ run = 'python3 -m unittest discover -s tests'
 [tasks.engine-status]
 description = "Show the pinned engine commit and which open upstream PRs it carries"
 run = 'git -C external/nesrecomp fetch -q https://github.com/mstan/nesrecomp.git master && git -C external/nesrecomp log --oneline --first-parent FETCH_HEAD..HEAD'
+
+[tasks.build-widescreen]
+description = "Build Super Mario Bros. with the experimental widescreen renderer (16:9)"
+run = 'python3 scripts/build-game.py smb1-widescreen --rom "${NESRECOMP_SMB_ROM:-SMB.nes}"'
+
+[tasks.copy-widescreen]
+description = "Build the next widescreen Mario patch and copy it to the SD (smb1 folder)"
+run = 'python3 scripts/deploy-game.py smb1-widescreen --rom "${NESRECOMP_SMB_ROM:-SMB.nes}" --sd-root "${NESRECOMP_SD_ROOT:-/Volumes/Untitled}"'
+
+[tasks.netload-widescreen]
+description = "Send the existing widescreen Mario build to hbmenu over Wi-Fi"
+run = 'python3 scripts/netload-game.py smb1-widescreen'

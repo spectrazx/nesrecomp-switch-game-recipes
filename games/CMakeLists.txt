@@ -1,6 +1,6 @@
 # Builds one game recipe (games/<id>/) against the NESRecomp submodule.
 cmake_minimum_required(VERSION 3.20)
-project(NESRecompGame C)
+project(NESRecompGame C CXX)
 get_filename_component(GAME_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(GAME_ID "" CACHE STRING "Game recipe directory name")
 if(NOT GAME_ID MATCHES "^[a-z0-9_-]+$" OR NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/${GAME_ID}/game.cmake")
@@ -44,16 +44,43 @@ endif()
 # FORCE so that switching variant in a reused build directory takes effect.
 set(NESRECOMP_PPU_IMPL "${ppu}" CACHE STRING "PPU selected by game variant" FORCE)
 set(NESRECOMP_SWITCH_TITLE "${GAME_TITLE}" CACHE STRING "NACP title" FORCE)
-set(NESRECOMP_SWITCH_GAME_DIR "sdmc:/switch/nesrecomp/${GAME_ID}" CACHE STRING "Runtime SD directory" FORCE)
+# GAME_SD_DIR: SD folder name (default: the recipe id). Variants of the same
+# cartridge can share one folder and its rom.nes.
+if(NOT GAME_SD_DIR)
+    set(GAME_SD_DIR "${GAME_ID}")
+endif()
+set(NESRECOMP_SWITCH_GAME_DIR "sdmc:/switch/nesrecomp/${GAME_SD_DIR}" CACHE STRING "Runtime SD directory" FORCE)
 set(NESRECOMP_RECOMP_UI OFF CACHE STRING "Recipes use the direct runner" FORCE)
 include("${NESRECOMP_ROOT}/runner/cyc/project.cmake")
 set(host_options "")
-if(NOT NINTENDO_SWITCH)
+# GAME_DESKTOP_SDL: the recipe's extra sources need SDL headers, so the
+# desktop reference is the windowed host (its --frames runs stay headless).
+if(NOT NINTENDO_SWITCH AND NOT GAME_DESKTOP_SDL)
     list(APPEND host_options HEADLESS)
 endif()
-nesrecomp_add_cycle_game(nes_game ROM "${NESRECOMP_ROM}" GAME_CONFIG "${GAME_MODULE_DIR}/game.toml"
+# Optional recipe fields for enhanced builds:
+#   GAME_CONFIG_FILE   recompiler config (default: the recipe's game.toml)
+#   GAME_MODS_ID       compile the mod runtime (function hooks, plugins) for this game id
+#   GAME_HOST_EXTRAS   extra C/C++ sources that provide cyc_host_extras() (cyc_host_extras.h)
+#   GAME_INCLUDE_DIRS, GAME_DEFINITIONS   for those sources
+if(NOT GAME_CONFIG_FILE)
+    set(GAME_CONFIG_FILE "${GAME_MODULE_DIR}/game.toml")
+endif()
+if(GAME_MODS_ID)
+    list(APPEND host_options MODS GAME_ID "${GAME_MODS_ID}")
+endif()
+if(GAME_HOST_EXTRAS)
+    list(APPEND host_options HOST_EXTRAS ${GAME_HOST_EXTRAS})
+endif()
+nesrecomp_add_cycle_game(nes_game ROM "${NESRECOMP_ROM}" GAME_CONFIG "${GAME_CONFIG_FILE}"
     SEED_FILE "${GAME_CYCLE_SEEDS}" RECOMPILER "${NESRECOMP_HOST_COMPILER}"
     REGION "${GAME_REGION}" ${host_options})
+if(GAME_INCLUDE_DIRS)
+    target_include_directories(nes_game PRIVATE ${GAME_INCLUDE_DIRS})
+endif()
+if(GAME_DEFINITIONS)
+    target_compile_definitions(nes_game PRIVATE ${GAME_DEFINITIONS})
+endif()
 if(NOT NINTENDO_SWITCH AND GAME_VARIANT STREQUAL "optimized")
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error LANGUAGES C)
@@ -64,6 +91,7 @@ endif()
 if(NINTENDO_SWITCH)
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-region.txt" "${GAME_REGION}\n")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-artifact.txt" "${GAME_ARTIFACT}.nro\n")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/game-sd-dir.txt" "${GAME_SD_DIR}\n")
     add_custom_target(package_game ALL
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${GAME_OUTPUT_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/nes_game.nro"

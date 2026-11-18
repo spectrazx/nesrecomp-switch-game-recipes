@@ -84,7 +84,14 @@ def main():
     run('cmake', '-S', ENGINE / 'recompiler', '-B', compiler.parent, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release')
     run('cmake', '--build', compiler.parent, '--parallel', '4')
     host = build / ('host' if args.variant == 'baseline' else 'host-optimized')
-    run(*configure(host, compiler, rom, args.variant), '-DGAME_PPU_OVERRIDE=')
+    desktop_sdl = []
+    for candidate in ('/opt/homebrew/opt/sdl2-compat/lib/cmake/SDL2', '/opt/homebrew/opt/sdl2/lib/cmake/SDL2',
+                      '/usr/local/opt/sdl2/lib/cmake/SDL2'):
+        if sys.platform == 'darwin' and Path(candidate).is_dir():
+            # Prefer the system SDL2 over the engine's vendored Windows copy.
+            desktop_sdl = [f'-DSDL2_DIR={candidate}']
+            break
+    run(*configure(host, compiler, rom, args.variant), '-DGAME_PPU_OVERRIDE=', *desktop_sdl)
     run('cmake', '--build', host, '--parallel', '4')
     with (host / 'boot.log').open('w') as log:
         subprocess.run([str(host / 'nes_game'), str(rom), '--frames', '600', '--no-save',
@@ -134,7 +141,10 @@ def main():
     cache = (binary / 'CMakeCache.txt').read_text()
     ppu = next((line.split('=', 1)[1] for line in cache.splitlines()
                 if line.startswith('NESRECOMP_PPU_IMPL:')), 'unknown')
-    manifest = dict(game=args.game, version=version, artifact=artifact_name, region=region, ppu=ppu,
+    sd_dir = (binary / 'game-sd-dir.txt').read_text().strip()
+    if not sd_dir or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789_-' for c in sd_dir):
+        raise ValueError('Invalid SD directory from CMake')
+    manifest = dict(game=args.game, version=version, artifact=artifact_name, region=region, ppu=ppu, sd_dir=sd_dir,
                     benchmark_input_sha256=route_sha256,
                     benchmark_input_asset='romfs:/benchmark-input.txt' if route else None,
                     engine_revision=subprocess.check_output(

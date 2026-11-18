@@ -63,14 +63,15 @@ def deploy(game, rom, sd, backend):
     subprocess.run([sys.executable, str(ROOT / 'scripts/inspect-nro.py'), str(artifact),
                     '--expect-version', version], check=True)
     require_mount(sd)  # The card may have been removed during compilation.
-    destination = sd / 'switch/nesrecomp' / game
+    destination = sd / 'switch/nesrecomp' / manifest.get('sd_dir', game)
     destination.mkdir(parents=True, exist_ok=True)
     pending = []
     try:
         for source, target, expected in (
             (artifact, destination / name, manifest['sha256']),
             (rom, destination / 'rom.nes', manifest['rom_sha256']),
-            (manifest_path, destination / 'build.json', digest(manifest_path)),
+            (manifest_path, destination / ('build.json' if manifest.get('sd_dir', game) == game else f'build-{game}.json'),
+             digest(manifest_path)),
         ):
             pending.append((stage(source, target, expected), target, expected))
         for temporary, target, expected in pending:

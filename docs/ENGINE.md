@@ -12,6 +12,7 @@ It has no commits of its own.
 | [#112](https://github.com/mstan/nesrecomp/pull/112) | `perf/masked-irq-intervals` | Native intervals while a masked APU frame IRQ is pending | Adventure Island speed |
 | [#113](https://github.com/mstan/nesrecomp/pull/113) | `perf/frame-ppu-pal` (on #112) | FRAME PPU and native intervals on PAL NROM/CNROM | Adventure Island speed |
 | [#114](https://github.com/mstan/nesrecomp/pull/114) | `perf/pal-clock` | Specialized PAL clock tail | Adventure Island (+4%) |
+| not opened yet | `feat/switch-host-extras` (on #111) | Switch runner accepts MODS/HOST_EXTRAS and presents a wider picture | smb1-widescreen |
 
 Pinned engine commit: see `git submodule status` or `mise run engine-status`
 (lists the merges on top of upstream `master`).
@@ -23,7 +24,7 @@ In a clone of the fork with `upstream` = mstan/nesrecomp:
 ```sh
 git fetch upstream
 git checkout -B switch-integration upstream/master
-for b in feat/switch-runner perf/arm-neon-sprite-kernels perf/frame-ppu-pal perf/pal-clock; do
+for b in feat/switch-runner perf/arm-neon-sprite-kernels perf/frame-ppu-pal perf/pal-clock feat/switch-host-extras; do
   git merge --no-ff --no-edit "$b"
 done
 git push --force-with-lease origin switch-integration

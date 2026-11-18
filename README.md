@@ -14,6 +14,7 @@ your own ROM.
 | --- | --- | --- | --- | --- |
 | [Super Mario Bros.](games/smb1/README.md) | NROM, CRC32 `D445F698` | NTSC | FRAME | 72 FPS uncapped (target 60.1) |
 | [Adventure Island Classic (Europe)](games/adventure-island/README.md) | CNROM, CRC32 `86867830` | PAL | FRAME | 53 FPS uncapped (target 50.0) |
+| [Super Mario Bros. widescreen](games/smb1-widescreen/README.md) (experimental) | NROM, CRC32 `D445F698` | NTSC | FRAME | 57.5 FPS uncapped (target 60.1), not yet full speed |
 
 ## Engine
 
